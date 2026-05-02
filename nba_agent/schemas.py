@@ -22,6 +22,7 @@ class AnalysisRequest:
     exclude_current_team: bool = True
     ranking_mode: str = "Best Talent"
     season: int | None = None
+    unavailable_constraints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

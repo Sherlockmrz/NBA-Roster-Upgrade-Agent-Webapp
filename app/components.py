@@ -8,6 +8,18 @@ from typing import Any
 import streamlit as st
 
 
+SIDEBAR_STATE_KEYS = {
+    "team": "selected_team",
+    "goal": "selected_goal",
+    "top_k": "selected_top_k",
+    "recent_games": "selected_recent_games",
+    "min_games": "selected_min_games",
+    "min_avg_minutes": "selected_min_avg_minutes",
+    "exclude_current_team": "selected_exclude_current_team",
+    "ranking_mode": "selected_ranking_mode",
+}
+
+
 def section_header(title: str, description: str = "") -> None:
     st.subheader(title)
     if description:
@@ -64,3 +76,37 @@ def render_recommendation_card(rank: int, row: Any) -> None:
             "Avg min",
             f"{float(avg_minutes):.1f}" if avg_minutes != "n/a" else "n/a",
         )
+
+
+def sidebar_values_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Return filter values from Streamlit-like session state."""
+
+    return {
+        field: state.get(state_key)
+        for field, state_key in SIDEBAR_STATE_KEYS.items()
+    }
+
+
+def merge_parsed_with_sidebar(
+    parsed: dict[str, Any],
+    sidebar_values: dict[str, Any],
+    use_sidebar_override: bool = False,
+) -> dict[str, Any]:
+    """Return final filters where the query parse wins unless overrides are enabled."""
+
+    final = dict(parsed)
+    if use_sidebar_override:
+        for field, value in sidebar_values.items():
+            if value is not None:
+                final[field] = value
+    return final
+
+
+def parsed_query_to_session_updates(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Map parsed query fields to sidebar widget session-state keys."""
+
+    return {
+        state_key: parsed[field]
+        for field, state_key in SIDEBAR_STATE_KEYS.items()
+        if field in parsed
+    }

@@ -27,7 +27,7 @@ def test_run_roster_agent_deterministic_trace_and_outputs():
         "Final Scouting Summary",
     ]
     assert [step.step_number for step in result.trace_steps] == list(range(1, 8))
-    assert result.parsed_query.team_name == "Warriors"
+    assert result.parsed_query.team_name == "Golden State Warriors"
     assert len(result.ranked_df) == 3
     assert not result.need_df.empty
     assert not result.player_strength_df.empty
@@ -52,7 +52,7 @@ def test_run_roster_agent_with_complete_filters():
     )
 
     assert result.warnings == []
-    assert result.parsed_query.team_name == "Warriors"
+    assert result.parsed_query.team_name == "Golden State Warriors"
     assert result.parsed_query.goal == "interior defense"
     assert result.parsed_query.ranking_mode == "Best Talent"
     assert len(result.ranked_df) == 4
@@ -84,9 +84,9 @@ def test_run_roster_agent_infers_missing_team_and_goal_from_clear_query():
         use_llm=False,
     )
 
-    assert result.parsed_query.team_name == "Lakers"
+    assert result.parsed_query.team_name == "Los Angeles Lakers"
     assert result.parsed_query.goal == "rebounding"
     assert result.parsed_query.top_k == 2
-    assert any("Team filter missing; inferred team from query: Lakers." == warning for warning in result.warnings)
+    assert any("Team filter missing; inferred team from query: Los Angeles Lakers." == warning for warning in result.warnings)
     assert any("Goal filter missing; inferred goal from query: rebounding." == warning for warning in result.warnings)
     assert len(result.ranked_df) == 2

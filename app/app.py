@@ -12,19 +12,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.components import (
+from components import (
+    merge_parsed_with_sidebar,
+    parsed_query_to_session_updates,
     render_key_value_grid,
     render_parsed_query,
     render_recommendation_card,
     section_header,
+    sidebar_values_from_state,
 )
 from nba_agent.agent import run_roster_agent
+from nba_agent.llm.client import get_llm_status
+from nba_agent.llm.parser import get_parser_warnings, parse_user_query
 from nba_agent.visuals.charts import fit_score_bar_chart, need_weight_bar_chart
 
 
 DATA_DIR = Path("data/raw")
 EXPECTED_RAW_FILES = ["teams.csv", "games.csv", "games_details.csv"]
 RANKING_MODES = ["Best Talent", "Realistic Fit", "Hidden Gems"]
+EXAMPLE_QUERY = (
+    "Recommend top 5 players for the Golden State Warriors to improve interior "
+    "defense using the last 10 games. Only include players with at least 15 "
+    "games and 15 average minutes."
+)
 
 
 st.set_page_config(
@@ -45,8 +55,13 @@ def missing_raw_files() -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
+def load_teams_df() -> pd.DataFrame:
+    return pd.read_csv(DATA_DIR / "teams.csv", low_memory=False)
+
+
+@st.cache_data(show_spinner=False)
 def load_team_options() -> list[str]:
-    teams = pd.read_csv(DATA_DIR / "teams.csv", low_memory=False)
+    teams = load_teams_df()
     labels = (
         teams["CITY"].fillna("").astype(str).str.strip()
         + " "
@@ -54,16 +69,6 @@ def load_team_options() -> list[str]:
     ).str.strip()
     labels = labels[labels != ""].sort_values().tolist()
     return labels or ["Warriors"]
-
-
-def build_user_query(team: str, goal: str, top_k: int, recent_games: int) -> str:
-    goal_text = goal.strip()
-    if goal_text:
-        return (
-            f"Recommend top {top_k} players for the {team} to improve {goal_text} "
-            f"using the last {recent_games} games."
-        )
-    return f"Recommend top {top_k} players for the {team} using the last {recent_games} games."
 
 
 def show_missing_data_error(missing: list[str]) -> None:
@@ -152,6 +157,82 @@ def render_tool_c(ranked_df: pd.DataFrame) -> None:
         st.dataframe(ranked_df, use_container_width=True, hide_index=True)
 
 
+def initialize_session_state(default_team: str) -> None:
+    defaults = {
+        "user_query": EXAMPLE_QUERY,
+        "selected_team": default_team,
+        "selected_goal": "interior defense",
+        "selected_top_k": 5,
+        "selected_recent_games": 10,
+        "selected_min_games": 15,
+        "selected_min_avg_minutes": 15.0,
+        "selected_exclude_current_team": True,
+        "selected_ranking_mode": "Best Talent",
+        "selected_use_llm": False,
+        "selected_use_sidebar_override": False,
+        "last_result": None,
+        "last_error": "",
+        "last_debug_details": [],
+        "last_parse_attempted": False,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def run_agent_from_state() -> None:
+    query = st.session_state.get("user_query", "").strip()
+    st.session_state["last_error"] = ""
+    st.session_state["last_result"] = None
+    st.session_state["last_debug_details"] = []
+    st.session_state["last_parse_attempted"] = False
+
+    if not query:
+        st.session_state["last_error"] = "Enter a roster question before running the agent."
+        return
+
+    sidebar_values = sidebar_values_from_state(st.session_state)
+    llm_status = get_llm_status()
+    use_llm = bool(st.session_state.get("selected_use_llm") and llm_status.available)
+    if st.session_state.get("selected_use_llm") and not llm_status.available:
+        st.session_state["last_debug_details"].append(
+            "Use LLM was enabled, but no OpenRouter key was available; deterministic parser was used."
+        )
+
+    parsed = parse_user_query(
+        user_query=query,
+        defaults=sidebar_values,
+        teams_df=load_teams_df(),
+        use_llm=use_llm,
+    )
+    st.session_state["last_parse_attempted"] = bool(use_llm)
+
+    final_filters = merge_parsed_with_sidebar(
+        parsed,
+        sidebar_values,
+        use_sidebar_override=bool(st.session_state.get("selected_use_sidebar_override")),
+    )
+    st.session_state.update(parsed_query_to_session_updates(final_filters))
+
+    debug_details = []
+    if use_llm:
+        debug_details.append("LLM parsing attempted; invalid fields were normalized when needed.")
+    debug_details.extend(get_parser_warnings())
+
+    try:
+        result = run_roster_agent(
+            user_query=query,
+            filters={**final_filters, "_parsed_fields": final_filters},
+            data_dir="data/raw",
+            use_llm=use_llm,
+        )
+    except Exception as exc:
+        st.session_state["last_error"] = str(exc)
+        return
+
+    st.session_state["last_result"] = result
+    st.session_state["last_debug_details"] = debug_details
+
+
 load_css()
 
 st.title("NBA Roster Upgrade Agent")
@@ -164,74 +245,91 @@ if missing:
 
 team_options = load_team_options()
 default_team_index = team_options.index("Golden State Warriors") if "Golden State Warriors" in team_options else 0
+initialize_session_state(team_options[default_team_index])
+
+user_query = st.text_area(
+    "Ask a roster question",
+    height=110,
+    key="user_query",
+)
 
 with st.sidebar:
     st.header("Run Controls")
-    team = st.selectbox("Team", team_options, index=default_team_index)
-    goal = st.text_input("Goal", value="interior defense")
-    top_k = st.slider("Top K", min_value=1, max_value=15, value=5)
-    recent_games = st.slider("Recent games", min_value=1, max_value=30, value=10)
-    min_games = st.slider("Min games", min_value=1, max_value=82, value=15)
+    if st.session_state["selected_team"] not in team_options:
+        st.session_state["selected_team"] = team_options[default_team_index]
+    team = st.selectbox("Team", team_options, key="selected_team")
+    goal = st.text_input("Goal", key="selected_goal")
+    top_k = st.slider("Top K", min_value=1, max_value=15, key="selected_top_k")
+    recent_games = st.slider("Recent games", min_value=1, max_value=30, key="selected_recent_games")
+    min_games = st.slider("Min games", min_value=1, max_value=82, key="selected_min_games")
     min_avg_minutes = st.slider(
         "Min average minutes",
         min_value=0.0,
         max_value=40.0,
-        value=15.0,
         step=0.5,
+        key="selected_min_avg_minutes",
     )
-    exclude_current_team = st.checkbox("Exclude current team", value=True)
-    ranking_mode = st.radio("Ranking mode", RANKING_MODES, index=0)
-    use_llm = st.toggle("Use LLM", value=False)
-    run_agent = st.button("Run Agent", type="primary", use_container_width=True)
-
-filters = {
-    "team": team,
-    "goal": goal,
-    "top_k": top_k,
-    "recent_games": recent_games,
-    "min_games": min_games,
-    "min_avg_minutes": min_avg_minutes,
-    "exclude_current_team": exclude_current_team,
-    "ranking_mode": ranking_mode,
-}
-user_query = build_user_query(team, goal, top_k, recent_games)
+    exclude_current_team = st.checkbox("Exclude current team", key="selected_exclude_current_team")
+    ranking_mode = st.radio("Ranking mode", RANKING_MODES, key="selected_ranking_mode")
+    use_sidebar_override = st.checkbox("Use sidebar as manual override", key="selected_use_sidebar_override")
+    use_llm = st.toggle("Use LLM", key="selected_use_llm")
+    llm_status = get_llm_status()
+    with st.expander("LLM status", expanded=True):
+        st.caption(f"LLM available: {'yes' if llm_status.available else 'no'}")
+        st.caption(f"Model: {llm_status.model}")
+        st.caption(f"Key preview: {llm_status.key_preview or 'not configured'}")
+        if not llm_status.available:
+            st.caption("Deterministic fallback mode is active.")
+    st.button(
+        "Run Agent",
+        type="primary",
+        use_container_width=True,
+        on_click=run_agent_from_state,
+    )
 
 if "salary" in user_query.lower():
     st.warning("Salary data is unavailable in the current dataset.")
 
 if use_llm:
-    st.info("LLM features are not implemented yet. This run will use deterministic fallback mode.")
+    st.info("LLM parsing and planning will be attempted, with deterministic fallback if unavailable.")
 
-if not run_agent:
-    st.info("Choose controls in the sidebar, then run the deterministic agent.")
-    st.stop()
-
-try:
-    with st.spinner("Running deterministic Tool A / Tool B / Tool C pipeline..."):
-        result = run_roster_agent(
-            user_query=user_query,
-            filters=filters,
-            data_dir="data/raw",
-            use_llm=False,
-        )
-except FileNotFoundError as exc:
-    show_missing_data_error(missing_raw_files() or EXPECTED_RAW_FILES)
-    st.caption(str(exc))
-    st.stop()
-except Exception as exc:
+if st.session_state.get("last_error"):
     st.error("The deterministic agent could not complete this run.")
-    st.caption(str(exc))
+    st.caption(st.session_state["last_error"])
     st.stop()
 
+result = st.session_state.get("last_result")
+if result is None:
+    st.info("Type or edit a roster question, then click Run Agent. The sidebar follows the parsed query by default.")
+    st.stop()
+
+if st.session_state.get("last_parse_attempted"):
+    st.info("LLM parsing attempted; validated query constraints are shown below.")
+
+debug_details = st.session_state.get("last_debug_details", [])
+quiet_warning_terms = ("LLM", "OpenRouter", "fallback", "parser", "planner")
+visible_warnings = []
+debug_warnings = list(debug_details)
 for warning in result.warnings:
+    if any(term in warning for term in quiet_warning_terms):
+        debug_warnings.append(warning)
+    else:
+        visible_warnings.append(warning)
+
+for warning in visible_warnings:
     st.warning(warning)
+
+if debug_warnings:
+    with st.expander("LLM debug / fallback details"):
+        for detail in dict.fromkeys(debug_warnings):
+            st.caption(detail)
 
 with st.container(border=True):
     section_header("Step 1: User Query", "The composed request passed to the agent.")
     st.write(result.user_query)
 
 with st.container(border=True):
-    section_header("Step 2: Parsed Query", "Deterministic parsing of team, goal, and filters.")
+    section_header("Step 2: Parsed Query", "Validated parsing of team, goal, and filters.")
     render_parsed_query(result.parsed_query)
 
 with st.container(border=True):

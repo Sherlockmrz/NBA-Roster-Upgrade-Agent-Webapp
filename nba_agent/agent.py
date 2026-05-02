@@ -7,6 +7,14 @@ from typing import Any
 
 from nba_agent.data.loader import load_raw_data
 from nba_agent.data.preprocessing import find_team_id, prepare_data
+from nba_agent.llm.client import get_llm_status
+from nba_agent.llm.parser import (
+    find_team_in_query,
+    get_parser_warnings,
+    normalize_team_value,
+    parse_user_query,
+)
+from nba_agent.llm.planner import get_planner_warnings, plan_tools
 from nba_agent.schemas import AgentResult, AnalysisRequest, PreparedNBAData, TraceStep
 from nba_agent.tools.fit_ranking import rank_players_by_fit
 from nba_agent.tools.need_diagnosis import diagnose_team_needs
@@ -36,6 +44,22 @@ GOAL_KEYWORDS = [
     "shooting",
 ]
 
+UNAVAILABLE_CONSTRAINT_WARNINGS = {
+    "salary": "Salary data is unavailable in the current dataset.",
+    "contracts": "Contract data is unavailable in the current dataset.",
+    "injuries": "Injury data is unavailable in the current dataset.",
+    "trade rumors": "Trade-rumor data is unavailable in the current dataset.",
+    "current NBA news": "Current NBA news is unavailable in the current dataset.",
+}
+
+UNAVAILABLE_CONSTRAINT_KEYWORDS = {
+    "salary": ["salary", "salary cap", "cap space", "payroll"],
+    "contracts": ["contract", "contracts", "expiring"],
+    "injuries": ["injury", "injuries", "injured", "health status"],
+    "trade rumors": ["trade rumor", "trade rumors", "rumor", "rumors"],
+    "current NBA news": ["current news", "latest news", "today", "breaking news"],
+}
+
 
 def _coerce_int(value: Any, fallback: int) -> int:
     try:
@@ -64,22 +88,7 @@ def _coerce_bool(value: Any, fallback: bool) -> bool:
 
 
 def _find_team_from_query(user_query: str, prepared_data: PreparedNBAData) -> str | None:
-    query = user_query.lower()
-    teams = prepared_data.teams.copy()
-
-    candidate_names: list[str] = []
-    for _, row in teams.iterrows():
-        for column in ["TEAM_NAME_FULL", "NICKNAME", "ABBREVIATION", "CITY"]:
-            value = row.get(column)
-            if value is not None and str(value).strip():
-                candidate_names.append(str(value).strip())
-
-    for name in sorted(set(candidate_names), key=len, reverse=True):
-        pattern = r"\b" + re.escape(name.lower()) + r"\b"
-        if re.search(pattern, query):
-            return name
-
-    return None
+    return find_team_in_query(user_query, prepared_data.teams)
 
 
 def _parse_goal(user_query: str, filters: dict[str, Any]) -> str:
@@ -111,147 +120,88 @@ def parse_query_deterministic(
 
     filters = filters or {}
     warnings = warnings if warnings is not None else []
+    parsed_fields = parse_user_query(
+        user_query=user_query,
+        defaults=filters,
+        teams_df=prepared_data.teams,
+        use_llm=False,
+    )
 
-    explicit_team = filters.get("team_name") or filters.get("team")
-    inferred_team = _find_team_from_query(user_query, prepared_data)
-    if explicit_team:
-        team_name = str(explicit_team)
-    elif inferred_team:
-        team_name = inferred_team
-        warnings.append(f"Team filter missing; inferred team from query: {team_name}.")
-    else:
-        team_name = DEFAULT_REQUEST.team_name
-        warnings.append(
-            f"Team filter missing and no team was found in the query; defaulted to {team_name}."
-        )
+    if not (filters.get("team_name") or filters.get("team")):
+        if parsed_fields["team"]:
+            warnings.append(f"Team filter missing; inferred team from query: {parsed_fields['team']}.")
+        else:
+            warnings.append(
+                f"Team filter missing and no team was found in the query; defaulted to {DEFAULT_REQUEST.team_name}."
+            )
 
     if filters.get("goal") is None:
-        inferred_goal = _parse_goal(user_query, filters)
-        if inferred_goal:
-            warnings.append(f"Goal filter missing; inferred goal from query: {inferred_goal}.")
+        if parsed_fields["goal"]:
+            warnings.append(f"Goal filter missing; inferred goal from query: {parsed_fields['goal']}.")
         else:
             warnings.append("Goal filter missing; no explicit goal was inferred.")
-    else:
-        inferred_goal = _parse_goal(user_query, filters)
 
-    top_k = _coerce_int(
-        filters.get("top_k"),
-        _parse_from_text(
-            [r"\btop\s+(\d+)\b", r"\brecommend\s+(\d+)\b"],
-            user_query,
-            DEFAULT_REQUEST.top_k,
-        ),
-    )
-    if filters.get("top_k") is None:
-        if top_k == DEFAULT_REQUEST.top_k:
-            warnings.append(f"top_k missing; defaulted to {DEFAULT_REQUEST.top_k}.")
-        else:
-            warnings.append(f"top_k missing; inferred from query: {top_k}.")
+    missing_defaults = [
+        ("top_k", DEFAULT_REQUEST.top_k),
+        ("recent_games", DEFAULT_REQUEST.recent_games),
+        ("min_games", DEFAULT_REQUEST.min_games),
+        ("min_avg_minutes", DEFAULT_REQUEST.min_avg_minutes),
+    ]
+    for field, default_value in missing_defaults:
+        if filters.get(field) is None:
+            parsed_value = parsed_fields[field]
+            if parsed_value == default_value:
+                warnings.append(f"{field} missing; defaulted to {default_value:g}.")
+            else:
+                warnings.append(f"{field} missing; inferred from query: {parsed_value:g}.")
 
-    recent_games = _coerce_int(
-        filters.get("recent_games"),
-        _parse_from_text(
-            [r"\blast\s+(\d+)\s+games?\b", r"\brecent\s+(\d+)\s+games?\b"],
-            user_query,
-            DEFAULT_REQUEST.recent_games,
-        ),
-    )
-    if filters.get("recent_games") is None:
-        if recent_games == DEFAULT_REQUEST.recent_games:
-            warnings.append(
-                f"recent_games missing; defaulted to {DEFAULT_REQUEST.recent_games}."
-            )
-        else:
-            warnings.append(f"recent_games missing; inferred from query: {recent_games}.")
-
-    min_games = _coerce_int(
-        filters.get("min_games"),
-        _parse_from_text(
-            [r"\bat least\s+(\d+)\s+games?\b", r"\bminimum\s+(\d+)\s+games?\b"],
-            user_query,
-            DEFAULT_REQUEST.min_games,
-        ),
-    )
-    if filters.get("min_games") is None:
-        if min_games == DEFAULT_REQUEST.min_games:
-            warnings.append(
-                f"min_games missing; defaulted to {DEFAULT_REQUEST.min_games}."
-            )
-        else:
-            warnings.append(f"min_games missing; inferred from query: {min_games}.")
-
-    min_avg_minutes = _coerce_float(
-        filters.get("min_avg_minutes"),
-        float(
-            _parse_from_text(
-                [
-                    r"\bat least\s+(\d+)\s+average minutes?\b",
-                    r"\b(\d+)\s+average minutes?\b",
-                    r"\bminimum\s+(\d+)\s+minutes?\b",
-                ],
-                user_query,
-                int(DEFAULT_REQUEST.min_avg_minutes),
-            )
-        ),
-    )
-    if filters.get("min_avg_minutes") is None:
-        if min_avg_minutes == DEFAULT_REQUEST.min_avg_minutes:
-            warnings.append(
-                "min_avg_minutes missing; "
-                f"defaulted to {DEFAULT_REQUEST.min_avg_minutes:g}."
-            )
-        else:
-            warnings.append(
-                f"min_avg_minutes missing; inferred from query: {min_avg_minutes:g}."
-            )
-
-    exclude_current_team = _coerce_bool(
-        filters.get("exclude_current_team"),
-        DEFAULT_REQUEST.exclude_current_team,
-    )
     if filters.get("exclude_current_team") is None:
         warnings.append(
             "exclude_current_team missing; "
             f"defaulted to {DEFAULT_REQUEST.exclude_current_team}."
         )
 
-    ranking_mode = str(filters.get("ranking_mode") or DEFAULT_REQUEST.ranking_mode)
     if filters.get("ranking_mode") is None:
         warnings.append(
             f"ranking_mode missing; defaulted to {DEFAULT_REQUEST.ranking_mode}."
         )
 
-    season = filters.get("season")
-    parsed_season = _coerce_int(season, 0) if season is not None else None
-
-    return AnalysisRequest(
-        team_name=team_name,
-        goal=_parse_goal(user_query, filters),
-        top_k=max(top_k, 1),
-        recent_games=max(recent_games, 1),
-        min_games=max(min_games, 1),
-        min_avg_minutes=max(min_avg_minutes, 0.0),
-        exclude_current_team=exclude_current_team,
-        ranking_mode=ranking_mode,
-        season=parsed_season,
-    )
+    return _analysis_request_from_fields(parsed_fields)
 
 
 def build_agent_plan(parsed_query: AnalysisRequest) -> list[str]:
     """Return the deterministic plan used by the orchestration layer."""
 
-    return [
-        f"Resolve team '{parsed_query.team_name}' and season.",
-        f"Run Tool A on the last {parsed_query.recent_games} team games.",
-        (
-            "Run Tool B to build player strength vectors with "
-            f"min_games={parsed_query.min_games} and "
-            f"min_avg_minutes={parsed_query.min_avg_minutes:g}."
+    return plan_tools(
+        parsed_query,
+        available_tools=[
+            "Tool A: Team Need Diagnosis",
+            "Tool B: Player Strength Representation",
+            "Tool C: Fit Ranking",
+        ],
+        use_llm=False,
+    )
+
+
+def _analysis_request_from_fields(parsed_fields: dict[str, Any]) -> AnalysisRequest:
+    return AnalysisRequest(
+        team_name=str(parsed_fields["team"]),
+        goal=str(parsed_fields.get("goal") or ""),
+        top_k=_coerce_int(parsed_fields.get("top_k"), DEFAULT_REQUEST.top_k),
+        recent_games=_coerce_int(
+            parsed_fields.get("recent_games"), DEFAULT_REQUEST.recent_games
         ),
-        f"Run Tool C to rank the top {parsed_query.top_k} statistical fits.",
-        f"Use ranking mode: {parsed_query.ranking_mode}.",
-        "Return a grounded placeholder scouting summary.",
-    ]
+        min_games=_coerce_int(parsed_fields.get("min_games"), DEFAULT_REQUEST.min_games),
+        min_avg_minutes=_coerce_float(
+            parsed_fields.get("min_avg_minutes"), DEFAULT_REQUEST.min_avg_minutes
+        ),
+        exclude_current_team=_coerce_bool(
+            parsed_fields.get("exclude_current_team"),
+            DEFAULT_REQUEST.exclude_current_team,
+        ),
+        ranking_mode=str(parsed_fields.get("ranking_mode") or DEFAULT_REQUEST.ranking_mode),
+        unavailable_constraints=tuple(parsed_fields.get("unavailable_constraints") or ()),
+    )
 
 
 def _build_final_summary(
@@ -293,6 +243,30 @@ def _trace_step(
     )
 
 
+def _extend_warnings(warnings: list[str], new_warnings: list[str]) -> None:
+    for warning in new_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+
+
+def _detect_unavailable_constraints(user_query: str) -> list[str]:
+    query = user_query.lower()
+    constraints = []
+    for label, keywords in UNAVAILABLE_CONSTRAINT_KEYWORDS.items():
+        if any(keyword in query for keyword in keywords):
+            constraints.append(label)
+    return constraints
+
+
+def _add_unavailable_constraint_warnings(
+    warnings: list[str], unavailable_constraints: tuple[str, ...]
+) -> None:
+    for constraint in unavailable_constraints:
+        warning = UNAVAILABLE_CONSTRAINT_WARNINGS.get(constraint)
+        if warning and warning not in warnings:
+            warnings.append(warning)
+
+
 def run_roster_agent(
     user_query: str,
     filters: dict | None = None,
@@ -309,11 +283,6 @@ def run_roster_agent(
     if "salary" in user_query.lower():
         warnings.append("Salary data is unavailable in the current dataset.")
 
-    if use_llm:
-        warnings.append(
-            "LLM mode is not implemented yet; deterministic fallback mode was used."
-        )
-
     raw_data = load_raw_data(data_dir)
     prepared_data = prepare_data(raw_data)
 
@@ -326,13 +295,36 @@ def run_roster_agent(
         )
     )
 
-    parsed_query = parse_query_deterministic(
-        user_query, filters, prepared_data, warnings=warnings
-    )
+    if use_llm:
+        if "_parsed_fields" in filters:
+            parsed_query = _analysis_request_from_fields(filters["_parsed_fields"])
+        else:
+            parsed_fields = parse_user_query(
+                user_query=user_query,
+                defaults=filters,
+                teams_df=prepared_data.teams,
+                use_llm=True,
+            )
+            parsed_query = _analysis_request_from_fields(parsed_fields)
+        _extend_warnings(warnings, get_llm_status().warnings)
+        _extend_warnings(warnings, get_parser_warnings())
+    elif "_parsed_fields" in filters:
+        parsed_query = _analysis_request_from_fields(filters["_parsed_fields"])
+    else:
+        parsed_query = parse_query_deterministic(
+            user_query, filters, prepared_data, warnings=warnings
+        )
+
+    _add_unavailable_constraint_warnings(warnings, parsed_query.unavailable_constraints)
+
     try:
         team_id = find_team_id(parsed_query.team_name, prepared_data.team_lookup)
     except ValueError:
-        inferred_team = _find_team_from_query(user_query, prepared_data)
+        inferred_team = normalize_team_value(
+            _find_team_from_query(user_query, prepared_data),
+            prepared_data.teams,
+            None,
+        )
         fallback_team = inferred_team or DEFAULT_REQUEST.team_name
         warnings.append(
             f"Could not resolve team '{parsed_query.team_name}'; "
@@ -348,6 +340,7 @@ def run_roster_agent(
             exclude_current_team=parsed_query.exclude_current_team,
             ranking_mode=parsed_query.ranking_mode,
             season=parsed_query.season,
+            unavailable_constraints=parsed_query.unavailable_constraints,
         )
         team_id = find_team_id(parsed_query.team_name, prepared_data.team_lookup)
     resolved_team_name = prepared_data.team_name_map[team_id]
@@ -373,16 +366,26 @@ def run_roster_agent(
                 "min_avg_minutes": parsed_query.min_avg_minutes,
                 "exclude_current_team": parsed_query.exclude_current_team,
                 "ranking_mode": parsed_query.ranking_mode,
+                "unavailable_constraints": list(parsed_query.unavailable_constraints),
             },
         )
     )
 
-    agent_plan = build_agent_plan(parsed_query)
+    available_tools = [
+        "Tool A: Team Need Diagnosis",
+        "Tool B: Player Strength Representation",
+        "Tool C: Fit Ranking",
+    ]
+    agent_plan = plan_tools(parsed_query, available_tools, use_llm=use_llm)
+    if use_llm:
+        _extend_warnings(warnings, get_llm_status().warnings)
+        _extend_warnings(warnings, get_planner_warnings())
+
     trace_steps.append(
         _trace_step(
             3,
             "Agent Plan",
-            "Deterministic plan for Tool A, Tool B, and Tool C execution.",
+            "Ordered plan for Tool A, Tool B, and Tool C execution.",
             {"plan": agent_plan},
         )
     )
