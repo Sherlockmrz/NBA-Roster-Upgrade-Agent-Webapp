@@ -80,3 +80,24 @@ Do not invent metrics. Do not calculate player fit scores. Do not invent salary,
 contract, injury, trade-rumor, or current NBA news information.
 {JSON_RESPONSE_INSTRUCTION}
 """.strip()
+
+
+SCOUTING_SUMMARIZER_PROMPT = f"""
+{GROUNDING_SYSTEM_PROMPT}
+
+Write a concise dashboard-friendly final scouting summary using only the
+computed outputs provided in the user message: parsed query, agent plan, Tool A
+needs, adjusted needs, need reasoning, Tool C rankings, and sensitivity output.
+
+Return JSON with exactly these keys:
+executive_summary, key_takeaways, limitations_note.
+
+key_takeaways must be a list of exactly three concise strings. Answer:
+what the team lacks, which players best fit and why, how need reasoning affected
+ranking, and how stable the recommendation is.
+
+Do not invent unavailable stats, salary, contracts, injuries, trade rumors,
+current NBA news, or external player/team facts. Salary/contract/injury/rumor
+data may only be mentioned as unavailable if the computed limitations say so.
+{JSON_RESPONSE_INSTRUCTION}
+""".strip()

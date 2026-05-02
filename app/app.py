@@ -220,6 +220,27 @@ def render_sensitivity(sensitivity) -> None:
         )
 
 
+def render_scouting_summary(summary) -> None:
+    st.markdown("**Executive summary**")
+    st.write(summary.executive_summary)
+
+    st.markdown("**Key takeaways**")
+    for takeaway in summary.key_takeaways[:3]:
+        st.markdown(f"- {takeaway}")
+
+    st.markdown("**Limitations**")
+    st.caption(summary.limitations_note)
+
+    debug_lines = []
+    if summary.used_fallback:
+        debug_lines.append("Deterministic scouting-summary fallback was used.")
+    debug_lines.extend(summary.warnings)
+    if debug_lines:
+        with st.expander("Summary fallback / debug details"):
+            for line in dict.fromkeys(debug_lines):
+                st.caption(line)
+
+
 def initialize_session_state(default_team: str) -> None:
     defaults = {
         "user_query": EXAMPLE_QUERY,
@@ -448,4 +469,4 @@ with st.container(border=True):
         "Step 9: Final Scouting Summary",
         "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
     )
-    st.write(result.final_summary)
+    render_scouting_summary(result.scouting_summary)

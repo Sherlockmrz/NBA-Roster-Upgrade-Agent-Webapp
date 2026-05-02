@@ -16,6 +16,7 @@ from nba_agent.llm.parser import (
 )
 from nba_agent.llm.planner import get_planner_warnings, plan_tools
 from nba_agent.llm.reasoner import reason_need_weights
+from nba_agent.llm.summarizer import summarize_scouting_report
 from nba_agent.schemas import AgentResult, AnalysisRequest, PreparedNBAData, TraceStep
 from nba_agent.tools.fit_ranking import rank_players_by_fit
 from nba_agent.tools.need_diagnosis import CORE_METRIC_LABELS, diagnose_team_needs
@@ -498,18 +499,22 @@ def run_roster_agent(
         )
     )
 
-    final_summary = _build_final_summary(
+    scouting_summary = summarize_scouting_report(
         parsed_query,
-        resolved_team_name,
+        agent_plan,
         need_df,
+        need_reasoning.adjusted_need_df,
+        need_reasoning,
         ranked_df,
+        sensitivity,
+        use_llm=use_llm,
     )
     trace_steps.append(
         _trace_step(
             9,
             "Final Scouting Summary",
-            "Placeholder grounded summary from deterministic pipeline outputs.",
-            {"summary": final_summary},
+            "Grounded scouting summary from computed pipeline outputs.",
+            {"summary": scouting_summary.executive_summary},
         )
     )
 
@@ -522,7 +527,8 @@ def run_roster_agent(
         player_strength_df=player_strength_df,
         ranked_df=ranked_df,
         sensitivity=sensitivity,
-        final_summary=final_summary,
+        scouting_summary=scouting_summary,
+        final_summary=scouting_summary.executive_summary,
         warnings=warnings,
         trace_steps=trace_steps,
     )

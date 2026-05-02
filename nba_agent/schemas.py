@@ -88,6 +88,17 @@ class SensitivityResult:
 
 
 @dataclass(frozen=True)
+class ScoutingSummaryResult:
+    """Grounded final summary for dashboard display."""
+
+    executive_summary: str
+    key_takeaways: list[str]
+    limitations_note: str
+    used_fallback: bool
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Structured result returned by the high-level roster agent."""
 
@@ -99,6 +110,7 @@ class AgentResult:
     player_strength_df: pd.DataFrame
     ranked_df: pd.DataFrame
     sensitivity: SensitivityResult
+    scouting_summary: ScoutingSummaryResult
     final_summary: str
     warnings: list[str]
     trace_steps: list[TraceStep]
@@ -115,6 +127,7 @@ class AgentResult:
             "player_strength_df": self.player_strength_df,
             "ranked_df": self.ranked_df,
             "sensitivity": self.sensitivity,
+            "scouting_summary": self.scouting_summary,
             "final_summary": self.final_summary,
             "warnings": self.warnings,
             "trace_steps": self.trace_steps,

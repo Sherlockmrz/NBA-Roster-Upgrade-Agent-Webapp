@@ -35,7 +35,8 @@ def test_run_roster_agent_deterministic_trace_and_outputs():
     assert not result.need_reasoning.adjusted_need_df.empty
     assert not result.player_strength_df.empty
     assert result.sensitivity.stability_label in {"Stable", "Somewhat Stable", "Unstable"}
-    assert "salary" in result.final_summary.lower()
+    assert "salary data" in result.scouting_summary.limitations_note.lower()
+    assert result.scouting_summary.executive_summary == result.final_summary
 
 
 def test_run_roster_agent_with_complete_filters():
