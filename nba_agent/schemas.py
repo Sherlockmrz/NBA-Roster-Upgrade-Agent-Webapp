@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -19,6 +20,7 @@ class AnalysisRequest:
     min_games: int = 15
     min_avg_minutes: float = 15.0
     exclude_current_team: bool = True
+    ranking_mode: str = "Best Talent"
     season: int | None = None
 
 
@@ -47,3 +49,44 @@ class PreparedNBAData:
     team_abbr_map: dict[int, str]
     team_lookup: dict[str, int]
     default_season: int
+
+
+@dataclass(frozen=True)
+class TraceStep:
+    """Streamlit-friendly pipeline trace item."""
+
+    step_number: int
+    title: str
+    short_description: str
+    status: str
+    key_outputs: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    """Structured result returned by the high-level roster agent."""
+
+    user_query: str
+    parsed_query: AnalysisRequest
+    agent_plan: list[str]
+    need_df: pd.DataFrame
+    player_strength_df: pd.DataFrame
+    ranked_df: pd.DataFrame
+    final_summary: str
+    warnings: list[str]
+    trace_steps: list[TraceStep]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a dictionary while preserving dataframe objects."""
+
+        return {
+            "user_query": self.user_query,
+            "parsed_query": self.parsed_query,
+            "agent_plan": self.agent_plan,
+            "need_df": self.need_df,
+            "player_strength_df": self.player_strength_df,
+            "ranked_df": self.ranked_df,
+            "final_summary": self.final_summary,
+            "warnings": self.warnings,
+            "trace_steps": self.trace_steps,
+        }
