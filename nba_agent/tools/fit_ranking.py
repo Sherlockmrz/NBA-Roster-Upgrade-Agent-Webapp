@@ -36,7 +36,12 @@ def rank_players_by_fit(
     if candidates.empty:
         return pd.DataFrame(columns=RANKING_COLUMNS)
 
-    need_map = dict(zip(need_df["metric"], need_df["need_weight"]))
+    weight_column = (
+        "adjusted_need_weight"
+        if "adjusted_need_weight" in need_df.columns
+        else "need_weight"
+    )
+    need_map = dict(zip(need_df["metric"], need_df[weight_column]))
 
     candidates["fit_score"] = 0.0
     for metric in CORE_METRICS:

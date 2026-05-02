@@ -22,14 +22,16 @@ def test_run_roster_agent_deterministic_trace_and_outputs():
         "Parsed Query",
         "Agent Plan",
         "Tool A: Team Need Diagnosis",
+        "LLM Need Reasoning",
         "Tool B: Player Strength Representation",
         "Tool C: Fit Ranking",
         "Final Scouting Summary",
     ]
-    assert [step.step_number for step in result.trace_steps] == list(range(1, 8))
+    assert [step.step_number for step in result.trace_steps] == list(range(1, 9))
     assert result.parsed_query.team_name == "Golden State Warriors"
     assert len(result.ranked_df) == 3
     assert not result.need_df.empty
+    assert not result.need_reasoning.adjusted_need_df.empty
     assert not result.player_strength_df.empty
     assert "salary" in result.final_summary.lower()
 

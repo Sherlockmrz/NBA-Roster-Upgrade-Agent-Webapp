@@ -15,9 +15,10 @@ from nba_agent.llm.parser import (
     parse_user_query,
 )
 from nba_agent.llm.planner import get_planner_warnings, plan_tools
+from nba_agent.llm.reasoner import reason_need_weights
 from nba_agent.schemas import AgentResult, AnalysisRequest, PreparedNBAData, TraceStep
 from nba_agent.tools.fit_ranking import rank_players_by_fit
-from nba_agent.tools.need_diagnosis import diagnose_team_needs
+from nba_agent.tools.need_diagnosis import CORE_METRIC_LABELS, diagnose_team_needs
 from nba_agent.tools.player_strength import build_player_strengths
 
 
@@ -373,6 +374,7 @@ def run_roster_agent(
 
     available_tools = [
         "Tool A: Team Need Diagnosis",
+        "LLM Need Reasoning",
         "Tool B: Player Strength Representation",
         "Tool C: Fit Ranking",
     ]
@@ -411,6 +413,24 @@ def run_roster_agent(
         )
     )
 
+    need_reasoning = reason_need_weights(
+        parsed_query,
+        need_df,
+        allowed_metrics=CORE_METRIC_LABELS,
+        use_llm=use_llm,
+    )
+    trace_steps.append(
+        _trace_step(
+            5,
+            "LLM Need Reasoning",
+            "Validated tactical multipliers were applied to Tool A need weights.",
+            {
+                "used_fallback": need_reasoning.used_fallback,
+                "metric_multipliers": need_reasoning.metric_multipliers,
+            },
+        )
+    )
+
     player_strength_df = build_player_strengths(
         prepared_data,
         season=season,
@@ -421,7 +441,7 @@ def run_roster_agent(
     )
     trace_steps.append(
         _trace_step(
-            5,
+            6,
             "Tool B: Player Strength Representation",
             "Built candidate player strength vectors from box-score features.",
             {
@@ -437,7 +457,7 @@ def run_roster_agent(
     )
 
     ranked_df = rank_players_by_fit(
-        need_df,
+        need_reasoning.adjusted_need_df,
         player_strength_df,
         team_id=team_id,
         top_k=parsed_query.top_k,
@@ -445,9 +465,9 @@ def run_roster_agent(
     )
     trace_steps.append(
         _trace_step(
-            6,
+            7,
             "Tool C: Fit Ranking",
-            "Ranked candidates by matching Tool A needs to Tool B strengths.",
+            "Ranked candidates by matching adjusted needs to Tool B strengths.",
             {
                 "top_k": parsed_query.top_k,
                 "top_players": ranked_df[
@@ -465,7 +485,7 @@ def run_roster_agent(
     )
     trace_steps.append(
         _trace_step(
-            7,
+            8,
             "Final Scouting Summary",
             "Placeholder grounded summary from deterministic pipeline outputs.",
             {"summary": final_summary},
@@ -477,6 +497,7 @@ def run_roster_agent(
         parsed_query=parsed_query,
         agent_plan=agent_plan,
         need_df=need_df,
+        need_reasoning=need_reasoning,
         player_strength_df=player_strength_df,
         ranked_df=ranked_df,
         final_summary=final_summary,

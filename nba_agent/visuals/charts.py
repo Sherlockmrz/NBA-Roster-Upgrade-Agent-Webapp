@@ -34,3 +34,19 @@ def fit_score_bar_chart(ranked_df: pd.DataFrame) -> None:
         .set_index("PLAYER_NAME")
     )
     st.bar_chart(chart_df)
+
+
+def need_weight_before_after_chart(adjusted_need_df: pd.DataFrame) -> None:
+    """Render original and adjusted need weights side by side."""
+
+    required = {"label", "need_weight", "adjusted_need_weight"}
+    if adjusted_need_df.empty or not required.issubset(adjusted_need_df.columns):
+        st.info("No adjusted need weights are available to chart.")
+        return
+
+    chart_df = (
+        adjusted_need_df[["label", "need_weight", "adjusted_need_weight"]]
+        .sort_values("adjusted_need_weight", ascending=True)
+        .set_index("label")
+    )
+    st.bar_chart(chart_df)

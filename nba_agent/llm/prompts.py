@@ -60,3 +60,23 @@ required tool order. The app always preserves Tool A, Tool B, and Tool C order.
 Do not add tools that are not listed as available. Do not calculate stats.
 {JSON_RESPONSE_INSTRUCTION}
 """.strip()
+
+
+NEED_REASONER_PROMPT = f"""
+{GROUNDING_SYSTEM_PROMPT}
+
+Reason about how the user's basketball goal should emphasize the provided Tool A
+team needs before deterministic player ranking. You receive only parsed query
+data, Tool A need rows, and allowed metric names/labels.
+
+Return JSON with exactly these keys:
+tactical_interpretation, metric_multipliers, explanations.
+
+metric_multipliers must be an object where every key is one of the allowed
+metric names already present in Tool A. Each multiplier must be between 0.5 and
+2.0. explanations must explain only those allowed metrics.
+
+Do not invent metrics. Do not calculate player fit scores. Do not invent salary,
+contract, injury, trade-rumor, or current NBA news information.
+{JSON_RESPONSE_INSTRUCTION}
+""".strip()

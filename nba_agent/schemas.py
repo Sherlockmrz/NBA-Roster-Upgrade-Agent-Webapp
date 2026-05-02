@@ -64,6 +64,18 @@ class TraceStep:
 
 
 @dataclass(frozen=True)
+class NeedReasoningResult:
+    """LLM/fallback interpretation of Tool A needs before ranking."""
+
+    tactical_interpretation: str
+    metric_multipliers: dict[str, float]
+    explanations: dict[str, str]
+    adjusted_need_df: pd.DataFrame
+    warnings: list[str]
+    used_fallback: bool
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Structured result returned by the high-level roster agent."""
 
@@ -71,6 +83,7 @@ class AgentResult:
     parsed_query: AnalysisRequest
     agent_plan: list[str]
     need_df: pd.DataFrame
+    need_reasoning: NeedReasoningResult
     player_strength_df: pd.DataFrame
     ranked_df: pd.DataFrame
     final_summary: str
@@ -85,6 +98,7 @@ class AgentResult:
             "parsed_query": self.parsed_query,
             "agent_plan": self.agent_plan,
             "need_df": self.need_df,
+            "need_reasoning": self.need_reasoning,
             "player_strength_df": self.player_strength_df,
             "ranked_df": self.ranked_df,
             "final_summary": self.final_summary,

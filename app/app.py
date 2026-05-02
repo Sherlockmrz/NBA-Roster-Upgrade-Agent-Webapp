@@ -24,7 +24,11 @@ from components import (
 from nba_agent.agent import run_roster_agent
 from nba_agent.llm.client import get_llm_status
 from nba_agent.llm.parser import get_parser_warnings, parse_user_query
-from nba_agent.visuals.charts import fit_score_bar_chart, need_weight_bar_chart
+from nba_agent.visuals.charts import (
+    fit_score_bar_chart,
+    need_weight_bar_chart,
+    need_weight_before_after_chart,
+)
 
 
 DATA_DIR = Path("data/raw")
@@ -141,6 +145,51 @@ def render_tool_b(player_strength_df: pd.DataFrame, filters: dict) -> None:
 
     with st.expander("Full Tool B player strength table"):
         st.dataframe(player_strength_df, use_container_width=True, hide_index=True)
+
+
+def render_need_reasoning(need_reasoning) -> None:
+    st.info("Need reasoning completed with validated constraints.")
+    with st.container(border=True):
+        st.markdown("**Tactical interpretation**")
+        st.write(need_reasoning.tactical_interpretation)
+
+    multiplier_rows = []
+    for metric, multiplier in need_reasoning.metric_multipliers.items():
+        label = metric
+        adjusted = need_reasoning.adjusted_need_df
+        if {"metric", "label"}.issubset(adjusted.columns):
+            match = adjusted[adjusted["metric"] == metric]
+            if not match.empty:
+                label = match.iloc[0]["label"]
+        multiplier_rows.append(
+            {
+                "metric": metric,
+                "label": label,
+                "multiplier": multiplier,
+                "explanation": need_reasoning.explanations.get(metric, ""),
+            }
+        )
+
+    st.dataframe(pd.DataFrame(multiplier_rows), use_container_width=True, hide_index=True)
+    need_weight_before_after_chart(need_reasoning.adjusted_need_df)
+
+    st.markdown("**Metric explanations**")
+    explanation_columns = st.columns(2)
+    for index, row in enumerate(multiplier_rows):
+        with explanation_columns[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"**{row['label']}**")
+                st.caption(f"Multiplier: {row['multiplier']:.2f}")
+                st.write(row["explanation"])
+
+    debug_lines = []
+    if need_reasoning.used_fallback:
+        debug_lines.append("Deterministic need-reasoning fallback was used.")
+    debug_lines.extend(need_reasoning.warnings)
+    if debug_lines:
+        with st.expander("Need reasoning fallback / debug details"):
+            for line in dict.fromkeys(debug_lines):
+                st.caption(line)
 
 
 def render_tool_c(ranked_df: pd.DataFrame) -> None:
@@ -346,7 +395,14 @@ with st.container(border=True):
 
 with st.container(border=True):
     section_header(
-        "Step 5: Tool B – Player Strength Representation",
+        "Step 5: LLM Need Reasoning",
+        "Goal-aware need multipliers are validated before deterministic ranking.",
+    )
+    render_need_reasoning(result.need_reasoning)
+
+with st.container(border=True):
+    section_header(
+        "Step 6: Tool B – Player Strength Representation",
         "Candidate player vectors built from the loaded box-score dataset.",
     )
     render_tool_b(
@@ -361,14 +417,14 @@ with st.container(border=True):
 
 with st.container(border=True):
     section_header(
-        "Step 6: Tool C – Fit Ranking",
-        "Ranked matches between Tool A need weights and Tool B strengths.",
+        "Step 7: Tool C – Fit Ranking",
+        "Ranked matches between adjusted need weights and Tool B strengths.",
     )
     render_tool_c(result.ranked_df)
 
 with st.container(border=True):
     section_header(
-        "Step 7: Final Scouting Summary",
+        "Step 8: Final Scouting Summary",
         "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
     )
     st.write(result.final_summary)

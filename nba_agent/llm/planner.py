@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
-
-from nba_agent.llm.client import call_llm_json
-from nba_agent.llm.prompts import PLANNER_PROMPT
 
 
 REQUIRED_TOOL_ORDER = [
