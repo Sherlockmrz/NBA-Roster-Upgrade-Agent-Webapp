@@ -1,6 +1,5 @@
+__pycache__/
+*.pyc
 .env
 .streamlit/secrets.toml
-__pycache__/
-.ipynb_checkpoints/
 .DS_Store
-*.pyc
