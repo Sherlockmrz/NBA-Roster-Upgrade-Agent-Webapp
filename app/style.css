@@ -1,1 +1,14 @@
-/* App-level styles (placeholder). */
+/* App-level styles for the roster-upgrade workflow. */
+
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 1.35rem;
+}
+
+[data-testid="stSidebar"] [data-testid="stButton"] button {
+    min-height: 2.75rem;
+}
