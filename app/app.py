@@ -206,6 +206,20 @@ def render_tool_c(ranked_df: pd.DataFrame) -> None:
         st.dataframe(ranked_df, use_container_width=True, hide_index=True)
 
 
+def render_sensitivity(sensitivity) -> None:
+    col_a, col_b = st.columns(2)
+    col_a.metric("Stability", sensitivity.stability_label)
+    col_b.metric("Top-k overlap", f"{sensitivity.top_k_overlap:.0%}")
+    st.write(sensitivity.explanation)
+
+    with st.expander("Rank comparison table"):
+        st.dataframe(
+            sensitivity.rank_comparison_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def initialize_session_state(default_team: str) -> None:
     defaults = {
         "user_query": EXAMPLE_QUERY,
@@ -424,7 +438,14 @@ with st.container(border=True):
 
 with st.container(border=True):
     section_header(
-        "Step 8: Final Scouting Summary",
+        "Step 8: Sensitivity / Robustness Check",
+        "Checks whether top recommendations hold under small need-weight changes.",
+    )
+    render_sensitivity(result.sensitivity)
+
+with st.container(border=True):
+    section_header(
+        "Step 9: Final Scouting Summary",
         "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
     )
     st.write(result.final_summary)

@@ -54,6 +54,7 @@ def _deterministic_plan(parsed_query, available_tools) -> list[str]:
             f"min_games={min_games} and min_avg_minutes={float(min_avg_minutes):g}."
         ),
         f"Run Tool C: Fit Ranking to return the top {top_k} statistical fits.",
+        "Run Sensitivity / Robustness Check by perturbing adjusted need weights and comparing top recommendations.",
         f"Display ranking mode: {ranking_mode}.",
         "Surface unavailable constraints without inventing missing data.",
         "Return a grounded scouting summary from deterministic outputs.",

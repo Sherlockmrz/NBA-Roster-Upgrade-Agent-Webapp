@@ -76,6 +76,18 @@ class NeedReasoningResult:
 
 
 @dataclass(frozen=True)
+class SensitivityResult:
+    """Robustness check for recommendation stability under small weight changes."""
+
+    stability_label: str
+    top_k_overlap: float
+    original_top_players: list[str]
+    perturbed_top_players: list[str]
+    explanation: str
+    rank_comparison_df: pd.DataFrame
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Structured result returned by the high-level roster agent."""
 
@@ -86,6 +98,7 @@ class AgentResult:
     need_reasoning: NeedReasoningResult
     player_strength_df: pd.DataFrame
     ranked_df: pd.DataFrame
+    sensitivity: SensitivityResult
     final_summary: str
     warnings: list[str]
     trace_steps: list[TraceStep]
@@ -101,6 +114,7 @@ class AgentResult:
             "need_reasoning": self.need_reasoning,
             "player_strength_df": self.player_strength_df,
             "ranked_df": self.ranked_df,
+            "sensitivity": self.sensitivity,
             "final_summary": self.final_summary,
             "warnings": self.warnings,
             "trace_steps": self.trace_steps,

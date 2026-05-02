@@ -20,6 +20,7 @@ from nba_agent.schemas import AgentResult, AnalysisRequest, PreparedNBAData, Tra
 from nba_agent.tools.fit_ranking import rank_players_by_fit
 from nba_agent.tools.need_diagnosis import CORE_METRIC_LABELS, diagnose_team_needs
 from nba_agent.tools.player_strength import build_player_strengths
+from nba_agent.tools.sensitivity import run_sensitivity_check
 
 
 DEFAULT_REQUEST = AnalysisRequest(team_name="Warriors")
@@ -377,6 +378,7 @@ def run_roster_agent(
         "LLM Need Reasoning",
         "Tool B: Player Strength Representation",
         "Tool C: Fit Ranking",
+        "Sensitivity / Robustness Check",
     ]
     agent_plan = plan_tools(parsed_query, available_tools, use_llm=use_llm)
     if use_llm:
@@ -477,6 +479,25 @@ def run_roster_agent(
         )
     )
 
+    sensitivity = run_sensitivity_check(
+        need_reasoning.adjusted_need_df,
+        player_strength_df,
+        ranked_df,
+        team_id=team_id,
+        top_k=parsed_query.top_k,
+    )
+    trace_steps.append(
+        _trace_step(
+            8,
+            "Sensitivity / Robustness Check",
+            "Compared top recommendations after a small need-weight perturbation.",
+            {
+                "stability_label": sensitivity.stability_label,
+                "top_k_overlap": sensitivity.top_k_overlap,
+            },
+        )
+    )
+
     final_summary = _build_final_summary(
         parsed_query,
         resolved_team_name,
@@ -485,7 +506,7 @@ def run_roster_agent(
     )
     trace_steps.append(
         _trace_step(
-            8,
+            9,
             "Final Scouting Summary",
             "Placeholder grounded summary from deterministic pipeline outputs.",
             {"summary": final_summary},
@@ -500,6 +521,7 @@ def run_roster_agent(
         need_reasoning=need_reasoning,
         player_strength_df=player_strength_df,
         ranked_df=ranked_df,
+        sensitivity=sensitivity,
         final_summary=final_summary,
         warnings=warnings,
         trace_steps=trace_steps,
