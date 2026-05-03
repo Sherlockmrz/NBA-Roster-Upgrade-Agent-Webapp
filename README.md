@@ -4,15 +4,11 @@ An explainable LLM-powered front-office assistant for NBA roster diagnosis, play
 
 **Streamlit WebApp** · **LLM Agent Reasoning** · **Explainable Sports Analytics** · **Deterministic Fallback** · **Grounded Q&A**
 
-## Screenshots
 
-Screenshots can be added after running the app locally.
 
 ![WebApp Home](assets/webapp_home.png)
-![Agent Pipeline](assets/agent_trace.png)
-![LLM Need Reasoning](assets/llm_need_reasoning.png)
-![Recommendation Cards](assets/player_ranking_cards.png)
-![Grounded Q&A](assets/qa_chat.png)
+
+
 
 ## Overview
 
@@ -54,18 +50,7 @@ After the agent runs, the app displays:
 
 ## Agent Pipeline
 
-```mermaid
-flowchart LR
-    A[User Query] --> B[LLM / Deterministic Parser]
-    B --> C[Agent Plan]
-    C --> D[Tool A: Team Need Diagnosis]
-    D --> E[LLM Need Reasoning]
-    E --> F[Tool B: Player Strength Representation]
-    F --> G[Tool C: Fit Ranking]
-    G --> H[Sensitivity / Robustness Check]
-    H --> I[Final Scouting Summary]
-    I --> J[Grounded Q&A]
-```
+![Agent Pipeline](assets/agent_trace.png)
 
 ## Detailed Workflow
 
