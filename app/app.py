@@ -162,6 +162,55 @@ def strongest_available_abilities(row: pd.Series, limit: int = 2) -> list[str]:
     ]
 
 
+def is_llm_api_failure_warning(warning: str) -> bool:
+    warning_lower = warning.lower()
+    failure_terms = (
+        "network error",
+        "rate limit",
+        "invalid json",
+        "request failed",
+        "unexpected response",
+        "empty content",
+    )
+    return any(term in warning_lower for term in failure_terms)
+
+
+def render_llm_control_status(llm_status, use_llm_requested: bool) -> None:
+    mode = "On" if use_llm_requested else "Off"
+    key_status = "available" if llm_status.available else "missing"
+    runtime_mode = (
+        f"Using LLM model: {llm_status.model}"
+        if use_llm_requested and llm_status.available
+        else "Deterministic fallback mode"
+    )
+    render_status_box(
+        "Model status",
+        f"LLM mode: {mode} · Model: {llm_status.model} · API key {key_status} · {runtime_mode}",
+        tone="success" if use_llm_requested and llm_status.available else "neutral",
+    )
+
+
+def render_last_run_llm_status() -> None:
+    requested = bool(st.session_state.get("last_llm_requested"))
+    key_available = bool(st.session_state.get("last_llm_key_available"))
+    api_failed = bool(st.session_state.get("last_llm_api_failed"))
+    model = st.session_state.get("last_llm_model") or get_llm_status().model
+
+    if requested and key_available and api_failed:
+        message = f"LLM requested but API call failed · Deterministic fallback used · Model attempted: {model}"
+        tone = "warning"
+    elif requested and key_available:
+        message = f"LLM enabled · Model: {model}"
+        tone = "success"
+    elif requested:
+        message = "LLM requested but API key missing · Deterministic fallback used"
+        tone = "warning"
+    else:
+        message = "LLM disabled · Deterministic mode"
+        tone = "neutral"
+    render_status_box("Run mode", message, tone=tone)
+
+
 def render_top_recommendations_preview(result) -> None:
     section_header(
         "Top 5 Recommended Players",
@@ -455,6 +504,10 @@ def initialize_session_state(default_team: str) -> None:
         "last_error": "",
         "last_debug_details": [],
         "last_parse_attempted": False,
+        "last_llm_requested": False,
+        "last_llm_key_available": False,
+        "last_llm_model": get_llm_status().model,
+        "last_llm_api_failed": False,
         "qa_messages": [],
     }
     for key, value in defaults.items():
@@ -475,8 +528,13 @@ def run_agent_from_state() -> None:
 
     sidebar_values = sidebar_values_from_state(st.session_state)
     llm_status = get_llm_status()
-    use_llm = bool(st.session_state.get("selected_use_llm") and llm_status.available)
-    if st.session_state.get("selected_use_llm") and not llm_status.available:
+    llm_requested = bool(st.session_state.get("selected_use_llm"))
+    use_llm = bool(llm_requested and llm_status.available)
+    st.session_state["last_llm_requested"] = llm_requested
+    st.session_state["last_llm_key_available"] = llm_status.available
+    st.session_state["last_llm_model"] = llm_status.model
+    st.session_state["last_llm_api_failed"] = False
+    if llm_requested and not llm_status.available:
         st.session_state["last_debug_details"].append(
             "Use LLM was enabled, but no OpenRouter key was available; deterministic parser was used."
         )
@@ -514,6 +572,11 @@ def run_agent_from_state() -> None:
 
     st.session_state["last_result"] = result
     st.session_state["last_debug_details"] = debug_details
+    post_run_status = get_llm_status()
+    llm_warnings = [*post_run_status.warnings, *result.warnings, *debug_details]
+    st.session_state["last_llm_api_failed"] = bool(
+        use_llm and any(is_llm_api_failure_warning(warning) for warning in llm_warnings)
+    )
 
 
 load_css()
@@ -543,13 +606,20 @@ user_query = st.text_area(
     height=110,
     key="user_query",
 )
-st.button(
-    "Run Agent",
-    type="primary",
-    use_container_width=True,
-    on_click=run_agent_from_state,
-    key="run_agent_main",
-)
+llm_status = get_llm_status()
+run_col, llm_col = st.columns([3, 1])
+with run_col:
+    st.button(
+        "Run Agent",
+        type="primary",
+        use_container_width=True,
+        on_click=run_agent_from_state,
+        key="run_agent_main",
+    )
+with llm_col:
+    st.toggle("Use LLM", key="selected_use_llm")
+use_llm = bool(st.session_state.get("selected_use_llm"))
+render_llm_control_status(llm_status, use_llm)
 render_help_box(
     "How to read this result",
     [
@@ -580,12 +650,11 @@ with st.sidebar:
     exclude_current_team = st.checkbox("Exclude current team", key="selected_exclude_current_team")
     ranking_mode = st.radio("Ranking mode", RANKING_MODES, key="selected_ranking_mode")
     use_sidebar_override = st.checkbox("Use sidebar as manual override", key="selected_use_sidebar_override")
-    use_llm = st.toggle("Use LLM", key="selected_use_llm")
     llm_status = get_llm_status()
     with st.expander("LLM status", expanded=True):
         st.caption(f"LLM available: {'yes' if llm_status.available else 'no'}")
         st.caption(f"Model: {llm_status.model}")
-        st.caption(f"Key preview: {llm_status.key_preview or 'not configured'}")
+        st.caption(f"API key: {'available' if llm_status.available else 'missing'}")
         if not llm_status.available:
             st.warning("OpenRouter API key is missing.")
             st.caption("Deterministic fallback mode is active.")
@@ -611,6 +680,8 @@ result = st.session_state.get("last_result")
 if result is None:
     st.info("Type or edit a roster question, then click Run Agent. The sidebar follows the parsed query by default.")
     st.stop()
+
+render_last_run_llm_status()
 
 if st.session_state.get("last_parse_attempted"):
     st.info("LLM parsing attempted; validated query constraints are shown below.")
