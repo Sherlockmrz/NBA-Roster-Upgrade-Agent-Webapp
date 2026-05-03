@@ -34,6 +34,7 @@ from nba_agent.visuals.charts import (
     need_weight_bar_chart,
     need_weight_before_after_chart,
 )
+from nba_agent.visuals.radar import RADAR_DIMENSIONS, player_radar_svg
 
 
 DATA_DIR = Path("data/raw")
@@ -103,6 +104,109 @@ def compact_dataframe(df: pd.DataFrame, preferred_columns: list[str], rows: int 
     if not columns:
         return df.head(rows)
     return df[columns].head(rows)
+
+
+def recommendation_preview_rows(result, limit: int = 5) -> list[pd.Series]:
+    if result.ranked_df.empty:
+        return []
+
+    rows = []
+    strength_df = result.player_strength_df
+    for _, ranked_row in result.ranked_df.head(limit).iterrows():
+        combined = ranked_row.to_dict()
+        if not strength_df.empty and "PLAYER_NAME" in strength_df.columns:
+            player_name = str(ranked_row.get("PLAYER_NAME", ""))
+            match = strength_df[strength_df["PLAYER_NAME"].astype(str) == player_name]
+            if "CURRENT_TEAM" in strength_df.columns and "CURRENT_TEAM" in ranked_row:
+                current_team = str(ranked_row.get("CURRENT_TEAM", ""))
+                team_match = match[match["CURRENT_TEAM"].astype(str) == current_team]
+                if not team_match.empty:
+                    match = team_match
+            if not match.empty:
+                combined = {**match.iloc[0].to_dict(), **combined}
+        rows.append(pd.Series(combined))
+    return rows
+
+
+def player_profile_text(row: pd.Series) -> str:
+    player_name = row.get("PLAYER_NAME", "This player")
+    best_match = row.get("best_match", "the current adjusted needs")
+    strongest = strongest_available_abilities(row)
+    if strongest:
+        strongest_text = ", ".join(strongest)
+        return (
+            f"{player_name} is recommended because his strongest available metrics "
+            f"align with the team's adjusted needs, especially {best_match}. The "
+            f"preview highlights {strongest_text} from the current dataset and Tool C fit scoring."
+        )
+    return (
+        f"{player_name} is recommended because his strongest available metrics "
+        f"align with the team's adjusted needs, especially {best_match}. This profile "
+        "is based only on the current dataset and Tool C fit scoring."
+    )
+
+
+def strongest_available_abilities(row: pd.Series, limit: int = 2) -> list[str]:
+    ability_values = []
+    for label, radar_column, strength_column in RADAR_DIMENSIONS:
+        value = row.get(radar_column, row.get(strength_column, 0.0))
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            numeric_value = 0.0
+        ability_values.append((label, numeric_value))
+    return [
+        label
+        for label, value in sorted(ability_values, key=lambda item: item[1], reverse=True)[:limit]
+        if value > 0
+    ]
+
+
+def render_top_recommendations_preview(result) -> None:
+    section_header(
+        "Top 5 Recommended Players",
+        "A quick front-office style view of the highest-ranked roster fits before the detailed reasoning trace.",
+    )
+    rows = recommendation_preview_rows(result, limit=5)
+    if not rows:
+        st.info("No recommendations available yet. Run the agent or adjust filters.")
+        return
+
+    for rank, row in enumerate(rows, start=1):
+        with st.container(border=True):
+            st.markdown(
+                f"""
+                <div class="recommendation-card-head">
+                    <span class="rank-badge">#{rank}</span>
+                    <span class="fit-score-badge">Fit score {float(row.get("fit_score", 0.0)):.2f}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            image_col, profile_col, radar_col = st.columns([1.05, 2.15, 1.25])
+            with image_col:
+                st.markdown(
+                    '<div class="player-image-placeholder">Player image placeholder</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption("Salary: unavailable in current dataset")
+            with profile_col:
+                st.markdown(f"### {row.get('PLAYER_NAME', 'Unknown player')}")
+                st.caption(f"Current team: {row.get('CURRENT_TEAM', 'Unknown team')}")
+                st.markdown(f"**Best match:** {row.get('best_match', 'General fit')}")
+                st.write(player_profile_text(row))
+            with radar_col:
+                st.markdown("**Ability radar**")
+                st.markdown(player_radar_svg(row), unsafe_allow_html=True)
+
+
+def render_summary_preview(result) -> None:
+    section_header(
+        "AI Scouting Summary",
+        "A concise preview of the grounded final summary before the full reasoning trace.",
+    )
+    with st.container(border=True):
+        st.write(result.final_summary or result.scouting_summary.executive_summary)
 
 
 def render_tool_a(need_df: pd.DataFrame) -> None:
@@ -439,6 +543,13 @@ user_query = st.text_area(
     height=110,
     key="user_query",
 )
+st.button(
+    "Run Agent",
+    type="primary",
+    use_container_width=True,
+    on_click=run_agent_from_state,
+    key="run_agent_main",
+)
 render_help_box(
     "How to read this result",
     [
@@ -478,12 +589,6 @@ with st.sidebar:
         if not llm_status.available:
             st.warning("OpenRouter API key is missing.")
             st.caption("Deterministic fallback mode is active.")
-    st.button(
-        "Run Agent",
-        type="primary",
-        use_container_width=True,
-        on_click=run_agent_from_state,
-    )
 
 if "salary" in user_query.lower():
     st.warning("Salary data is unavailable in the current dataset.")
@@ -527,6 +632,9 @@ if debug_warnings:
     with st.expander("LLM debug / fallback details"):
         for detail in dict.fromkeys(debug_warnings):
             st.caption(detail)
+
+render_top_recommendations_preview(result)
+render_summary_preview(result)
 
 with st.container(border=True):
     section_header("Step 1: User Query", "What the user asked the agent to solve.")
