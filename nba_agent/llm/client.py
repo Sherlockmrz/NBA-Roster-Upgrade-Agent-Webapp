@@ -34,7 +34,33 @@ class LLMStatus:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass
+class LLMCallResult:
+    """Structured result for one OpenRouter call."""
+
+    ok: bool
+    content: Any = None
+    model: str = DEFAULT_OPENROUTER_MODEL
+    used_fallback: bool = False
+    error_type: str = ""
+    error_message: str = ""
+    http_status: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "content": self.content,
+            "model": self.model,
+            "used_fallback": self.used_fallback,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "http_status": self.http_status,
+        }
+
+
 _STATUS = LLMStatus()
+_LAST_CALL_RESULT = LLMCallResult(ok=False, used_fallback=True)
+_CALL_HISTORY: list[LLMCallResult] = []
 
 
 def get_llm_status() -> LLMStatus:
@@ -50,27 +76,121 @@ def is_llm_available() -> bool:
     return get_llm_status().available
 
 
+def clear_llm_call_history() -> None:
+    """Clear structured call results for the next user-triggered run."""
+
+    _CALL_HISTORY.clear()
+
+
+def get_last_llm_call_result() -> LLMCallResult:
+    """Return a copy of the most recent structured call result."""
+
+    return deepcopy(_LAST_CALL_RESULT)
+
+
+def get_llm_call_history() -> list[LLMCallResult]:
+    """Return structured results for recent LLM calls."""
+
+    return deepcopy(_CALL_HISTORY)
+
+
 def call_llm_json(messages: list[dict[str, str]], fallback: Any) -> Any:
     """Call OpenRouter and parse a JSON object, returning fallback on any failure."""
 
-    text = _call_openrouter(messages, json_mode=True)
-    if text is None:
-        return fallback
+    return call_llm_json_result(messages, fallback).content
+
+
+def call_llm_json_result(messages: list[dict[str, str]], fallback: Any) -> LLMCallResult:
+    """Call OpenRouter, parse JSON, and return structured diagnostics."""
+
+    raw_result = _call_openrouter_result(messages)
+    if not raw_result.ok:
+        result = _with_fallback(raw_result, fallback)
+        _record_call_result(result)
+        return result
 
     try:
-        return json.loads(_strip_json_fence(text))
-    except json.JSONDecodeError:
-        _add_warning("OpenRouter returned invalid JSON; deterministic fallback was used.")
-        return fallback
+        parsed = json.loads(_strip_json_fence(str(raw_result.content)))
+    except json.JSONDecodeError as exc:
+        message = f"LLM response was received but JSON parsing failed: {exc.msg}"
+        _add_warning(f"{message}; deterministic fallback was used.")
+        result = LLMCallResult(
+            ok=False,
+            content=deepcopy(fallback),
+            model=raw_result.model,
+            used_fallback=True,
+            error_type="json_validation_error",
+            error_message=message,
+        )
+        _record_call_result(result)
+        return result
+
+    result = LLMCallResult(
+        ok=True,
+        content=parsed,
+        model=raw_result.model,
+        used_fallback=False,
+    )
+    _record_call_result(result)
+    return result
 
 
 def call_llm_text(messages: list[dict[str, str]], fallback: str) -> str:
     """Call OpenRouter and return text, returning fallback on any failure."""
 
-    text = _call_openrouter(messages, json_mode=False)
-    if text is None:
-        return fallback
-    return text
+    return str(call_llm_text_result(messages, fallback).content)
+
+
+def call_llm_text_result(messages: list[dict[str, str]], fallback: str) -> LLMCallResult:
+    """Call OpenRouter for text and return structured diagnostics."""
+
+    raw_result = _call_openrouter_result(messages)
+    if not raw_result.ok:
+        result = _with_fallback(raw_result, fallback)
+        _record_call_result(result)
+        return result
+
+    result = LLMCallResult(
+        ok=True,
+        content=str(raw_result.content),
+        model=raw_result.model,
+        used_fallback=False,
+    )
+    _record_call_result(result)
+    return result
+
+
+def test_llm_connection() -> LLMCallResult:
+    """Send a tiny JSON request to verify OpenRouter connectivity."""
+
+    result = call_llm_json_result(
+        [
+            {
+                "role": "system",
+                "content": "Return strict JSON only. Do not include markdown.",
+            },
+            {
+                "role": "user",
+                "content": 'Return exactly JSON: {"status": "ok"}',
+            },
+        ],
+        fallback={"status": "fallback"},
+    )
+    if not result.ok:
+        return result
+    if not isinstance(result.content, dict) or result.content.get("status") != "ok":
+        message = "LLM connection response did not contain {'status': 'ok'}."
+        checked = LLMCallResult(
+            ok=False,
+            content={"status": "fallback"},
+            model=result.model,
+            used_fallback=True,
+            error_type="json_validation_error",
+            error_message=message,
+        )
+        _record_call_result(checked)
+        return checked
+    return result
 
 
 def _refresh_status() -> None:
@@ -91,11 +211,18 @@ def _refresh_status() -> None:
         _STATUS.warnings.remove(MISSING_KEY_WARNING)
 
 
-def _call_openrouter(messages: list[dict[str, str]], json_mode: bool = False) -> str | None:
+def _call_openrouter_result(messages: list[dict[str, str]]) -> LLMCallResult:
     _refresh_status()
     api_key = _env_value("OPENROUTER_API_KEY")
+    model = _STATUS.model or DEFAULT_OPENROUTER_MODEL
     if not api_key:
-        return None
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="missing_api_key",
+            error_message="OpenRouter API key is missing.",
+        )
 
     endpoint = _openrouter_endpoint()
     headers = {
@@ -111,12 +238,10 @@ def _call_openrouter(messages: list[dict[str, str]], json_mode: bool = False) ->
         headers["X-Title"] = app_name
 
     payload = {
-        "model": _STATUS.model,
+        "model": model,
         "messages": messages,
-        "temperature": 0,
+        "temperature": 0.2,
     }
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
 
     try:
         response = requests.post(
@@ -126,31 +251,75 @@ def _call_openrouter(messages: list[dict[str, str]], json_mode: bool = False) ->
             timeout=DEFAULT_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
-        _add_warning(f"OpenRouter network error; deterministic fallback was used. {exc}")
-        return None
+        message = _safe_error_message(str(exc), api_key)
+        _add_warning(f"OpenRouter network error; deterministic fallback was used. {message}")
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="network_error",
+            error_message=message,
+        )
 
     if response.status_code == 429:
+        message = _safe_response_text(response, api_key)
         _add_warning("OpenRouter rate limit reached; deterministic fallback was used.")
-        return None
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="rate_limit",
+            error_message=message or "OpenRouter rate limit reached.",
+            http_status=response.status_code,
+        )
     if response.status_code >= 400:
+        message = _safe_response_text(response, api_key)
         _add_warning(
             f"OpenRouter request failed with status {response.status_code}; "
             "deterministic fallback was used."
         )
-        return None
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="http_error",
+            error_message=message or f"OpenRouter request failed with status {response.status_code}.",
+            http_status=response.status_code,
+        )
 
     try:
         data = response.json()
         content = data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
+        message = _safe_response_text(response, api_key)
         _add_warning("OpenRouter returned an unexpected response; deterministic fallback was used.")
-        return None
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="api_response_error",
+            error_message=message or "OpenRouter returned an unexpected response shape.",
+            http_status=response.status_code,
+        )
 
     if not isinstance(content, str) or not content.strip():
         _add_warning("OpenRouter returned empty content; deterministic fallback was used.")
-        return None
+        return LLMCallResult(
+            ok=False,
+            model=model,
+            used_fallback=True,
+            error_type="empty_content",
+            error_message="OpenRouter returned empty content.",
+            http_status=response.status_code,
+        )
 
-    return content.strip()
+    return LLMCallResult(
+        ok=True,
+        content=content.strip(),
+        model=model,
+        used_fallback=False,
+        http_status=response.status_code,
+    )
 
 
 def _openrouter_endpoint() -> str:
@@ -194,6 +363,38 @@ def _strip_json_fence(text: str) -> str:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     return stripped
+
+
+def _with_fallback(result: LLMCallResult, fallback: Any) -> LLMCallResult:
+    return LLMCallResult(
+        ok=False,
+        content=deepcopy(fallback),
+        model=result.model,
+        used_fallback=True,
+        error_type=result.error_type,
+        error_message=result.error_message,
+        http_status=result.http_status,
+    )
+
+
+def _record_call_result(result: LLMCallResult) -> None:
+    global _LAST_CALL_RESULT
+    _LAST_CALL_RESULT = deepcopy(result)
+    _CALL_HISTORY.append(deepcopy(result))
+
+
+def _safe_response_text(response: requests.Response, api_key: str) -> str:
+    return _safe_error_message(getattr(response, "text", ""), api_key)
+
+
+def _safe_error_message(message: str, api_key: str = "") -> str:
+    if not message:
+        return ""
+    safe = str(message)
+    if api_key:
+        safe = safe.replace(api_key, "[redacted]")
+    safe = " ".join(safe.split())
+    return safe[:500]
 
 
 def _add_warning(message: str) -> None:

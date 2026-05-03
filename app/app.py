@@ -26,7 +26,12 @@ from components import (
     sidebar_values_from_state,
 )
 from nba_agent.agent import run_roster_agent
-from nba_agent.llm.client import get_llm_status
+from nba_agent.llm.client import (
+    clear_llm_call_history,
+    get_llm_call_history,
+    get_llm_status,
+    test_llm_connection,
+)
 from nba_agent.llm.parser import get_parser_warnings, parse_user_query
 from nba_agent.llm.qa import answer_grounded_question
 from nba_agent.visuals.charts import (
@@ -162,19 +167,6 @@ def strongest_available_abilities(row: pd.Series, limit: int = 2) -> list[str]:
     ]
 
 
-def is_llm_api_failure_warning(warning: str) -> bool:
-    warning_lower = warning.lower()
-    failure_terms = (
-        "network error",
-        "rate limit",
-        "invalid json",
-        "request failed",
-        "unexpected response",
-        "empty content",
-    )
-    return any(term in warning_lower for term in failure_terms)
-
-
 def render_llm_control_status(llm_status, use_llm_requested: bool) -> None:
     mode = "On" if use_llm_requested else "Off"
     key_status = "available" if llm_status.available else "missing"
@@ -193,10 +185,14 @@ def render_llm_control_status(llm_status, use_llm_requested: bool) -> None:
 def render_last_run_llm_status() -> None:
     requested = bool(st.session_state.get("last_llm_requested"))
     key_available = bool(st.session_state.get("last_llm_key_available"))
-    api_failed = bool(st.session_state.get("last_llm_api_failed"))
+    fallback_used = bool(st.session_state.get("last_llm_fallback_used"))
+    error_type = st.session_state.get("last_llm_error_type", "")
     model = st.session_state.get("last_llm_model") or get_llm_status().model
 
-    if requested and key_available and api_failed:
+    if requested and key_available and error_type == "json_validation_error":
+        message = "LLM response received but JSON validation failed · Deterministic fallback used"
+        tone = "warning"
+    elif requested and key_available and fallback_used:
         message = f"LLM requested but API call failed · Deterministic fallback used · Model attempted: {model}"
         tone = "warning"
     elif requested and key_available:
@@ -209,6 +205,22 @@ def render_last_run_llm_status() -> None:
         message = "LLM disabled · Deterministic mode"
         tone = "neutral"
     render_status_box("Run mode", message, tone=tone)
+
+
+def render_llm_debug_expander(debug_warnings: list[str]) -> None:
+    with st.expander("LLM debug / fallback details"):
+        st.caption(f"LLM enabled: {bool(st.session_state.get('last_llm_requested'))}")
+        st.caption(f"API key available: {bool(st.session_state.get('last_llm_key_available'))}")
+        st.caption(f"Model attempted: {st.session_state.get('last_llm_model') or get_llm_status().model}")
+        st.caption(f"Fallback used: {bool(st.session_state.get('last_llm_fallback_used'))}")
+        error_type = st.session_state.get("last_llm_error_type", "")
+        error_message = st.session_state.get("last_llm_error_message", "")
+        if error_type:
+            st.caption(f"Error type: {error_type}")
+        if error_message:
+            st.caption(f"Error message: {error_message}")
+        for detail in dict.fromkeys(debug_warnings):
+            st.caption(detail)
 
 
 def render_top_recommendations_preview(result) -> None:
@@ -459,7 +471,7 @@ def render_grounded_qa(result, use_llm: bool) -> None:
     example_questions = [
         "Why is the first player ranked first?",
         "What changed after LLM Need Reasoning?",
-        "What changed after Feasibility Critique?",
+        "Why does this team need rebounding?",
         "Is the recommendation stable?",
         "What data is missing?",
     ]
@@ -507,7 +519,10 @@ def initialize_session_state(default_team: str) -> None:
         "last_llm_requested": False,
         "last_llm_key_available": False,
         "last_llm_model": get_llm_status().model,
-        "last_llm_api_failed": False,
+        "last_llm_fallback_used": False,
+        "last_llm_error_type": "",
+        "last_llm_error_message": "",
+        "llm_connection_test": None,
         "qa_messages": [],
     }
     for key, value in defaults.items():
@@ -521,6 +536,7 @@ def run_agent_from_state() -> None:
     st.session_state["last_debug_details"] = []
     st.session_state["last_parse_attempted"] = False
     st.session_state["qa_messages"] = []
+    clear_llm_call_history()
 
     if not query:
         st.session_state["last_error"] = "Enter a roster question before running the agent."
@@ -533,7 +549,9 @@ def run_agent_from_state() -> None:
     st.session_state["last_llm_requested"] = llm_requested
     st.session_state["last_llm_key_available"] = llm_status.available
     st.session_state["last_llm_model"] = llm_status.model
-    st.session_state["last_llm_api_failed"] = False
+    st.session_state["last_llm_fallback_used"] = bool(llm_requested and not llm_status.available)
+    st.session_state["last_llm_error_type"] = "missing_api_key" if llm_requested and not llm_status.available else ""
+    st.session_state["last_llm_error_message"] = "OpenRouter API key is missing." if llm_requested and not llm_status.available else ""
     if llm_requested and not llm_status.available:
         st.session_state["last_debug_details"].append(
             "Use LLM was enabled, but no OpenRouter key was available; deterministic parser was used."
@@ -572,11 +590,14 @@ def run_agent_from_state() -> None:
 
     st.session_state["last_result"] = result
     st.session_state["last_debug_details"] = debug_details
-    post_run_status = get_llm_status()
-    llm_warnings = [*post_run_status.warnings, *result.warnings, *debug_details]
-    st.session_state["last_llm_api_failed"] = bool(
-        use_llm and any(is_llm_api_failure_warning(warning) for warning in llm_warnings)
+    failed_call = next(
+        (call for call in get_llm_call_history() if call.used_fallback or not call.ok),
+        None,
     )
+    if failed_call is not None:
+        st.session_state["last_llm_fallback_used"] = True
+        st.session_state["last_llm_error_type"] = failed_call.error_type
+        st.session_state["last_llm_error_message"] = failed_call.error_message
 
 
 load_css()
@@ -585,11 +606,11 @@ render_hero(
     "NBA Roster Upgrade Agent WebApp",
     (
         "An explainable LLM-powered front-office assistant for team diagnosis, "
-        "player fit ranking, feasibility critique, and grounded scouting Q&A."
+        "player fit ranking, robustness checking, and grounded scouting Q&A."
     ),
 )
 render_workflow_strip(
-    ["Query", "Parse", "Diagnose", "Reason", "Rank", "Critique", "Verify", "Explain", "Chat"]
+    ["Query", "Parse", "Diagnose", "Reason", "Rank", "Verify", "Explain", "Chat"]
 )
 
 missing = missing_raw_files()
@@ -625,7 +646,7 @@ render_help_box(
     [
         "Start with the parsed query to confirm the team, goal, and filters.",
         "Use Tool A and Need Reasoning to see why certain skills matter more.",
-        "Read Tool C cards as deterministic fit recommendations, not transaction feasibility.",
+        "Read Tool C cards as deterministic fit recommendations from the current dataset.",
         "Use Sensitivity to judge whether the top recommendations are stable.",
         "Ask Grounded Q&A only about the displayed run outputs.",
     ],
@@ -655,6 +676,18 @@ with st.sidebar:
         st.caption(f"LLM available: {'yes' if llm_status.available else 'no'}")
         st.caption(f"Model: {llm_status.model}")
         st.caption(f"API key: {'available' if llm_status.available else 'missing'}")
+        if st.button("Test LLM connection", use_container_width=True):
+            st.session_state["llm_connection_test"] = test_llm_connection().to_dict()
+        test_result = st.session_state.get("llm_connection_test")
+        if test_result:
+            if test_result.get("ok"):
+                st.success(f"Connection succeeded · Model: {test_result.get('model')}")
+            else:
+                st.warning("Connection failed.")
+                if test_result.get("error_type"):
+                    st.caption(f"Error type: {test_result.get('error_type')}")
+                if test_result.get("error_message"):
+                    st.caption(f"Error message: {test_result.get('error_message')}")
         if not llm_status.available:
             st.warning("OpenRouter API key is missing.")
             st.caption("Deterministic fallback mode is active.")
@@ -699,10 +732,7 @@ for warning in result.warnings:
 for warning in visible_warnings:
     st.warning(warning)
 
-if debug_warnings:
-    with st.expander("LLM debug / fallback details"):
-        for detail in dict.fromkeys(debug_warnings):
-            st.caption(detail)
+render_llm_debug_expander(debug_warnings)
 
 render_top_recommendations_preview(result)
 render_summary_preview(result)
