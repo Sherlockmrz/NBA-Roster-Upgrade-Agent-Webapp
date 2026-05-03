@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from html import escape
 from typing import Any
 
 import streamlit as st
@@ -20,10 +21,75 @@ SIDEBAR_STATE_KEYS = {
 }
 
 
+def render_hero(title: str, subtitle: str) -> None:
+    """Render the dashboard hero header."""
+
+    st.markdown(
+        f"""
+        <section class="app-hero">
+            <div class="app-kicker">Explainable roster intelligence</div>
+            <h1>{escape(title)}</h1>
+            <p>{escape(subtitle)}</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_workflow_strip(steps: list[str]) -> None:
+    """Render the compact top-level workflow strip."""
+
+    pieces = []
+    for index, step in enumerate(steps):
+        pieces.append(f'<span class="workflow-chip">{escape(step)}</span>')
+        if index < len(steps) - 1:
+            pieces.append('<span class="workflow-arrow">→</span>')
+    chips = "".join(pieces)
+    st.markdown(
+        f'<div class="workflow-strip">{chips}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_help_box(title: str, lines: list[str]) -> None:
+    """Render a concise dashboard help panel."""
+
+    items = "".join(f"<li>{escape(line)}</li>" for line in lines)
+    st.markdown(
+        f"""
+        <div class="help-box">
+            <strong>{escape(title)}</strong>
+            <ul>{items}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_status_box(title: str, body: str, tone: str = "info") -> None:
+    """Render a compact status or warning box."""
+
+    st.markdown(
+        f"""
+        <div class="status-box status-{escape(tone)}">
+            <strong>{escape(title)}</strong>
+            <span>{escape(body)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def section_header(title: str, description: str = "") -> None:
-    st.subheader(title)
-    if description:
-        st.caption(description)
+    st.markdown(
+        f"""
+        <div class="section-heading">
+            <h2>{escape(title)}</h2>
+            <p>{escape(description)}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def section_card(title: str, description: str = ""):
@@ -45,8 +111,7 @@ def render_key_value_grid(values: dict[str, Any]) -> None:
     columns = st.columns(2)
     for index, (label, value) in enumerate(values.items()):
         with columns[index % 2]:
-            st.markdown(f"**{label.replace('_', ' ').title()}**")
-            st.caption(str(value))
+            render_status_box(label.replace("_", " ").title(), str(value), tone="neutral")
 
 
 def render_parsed_query(parsed_query: Any) -> None:

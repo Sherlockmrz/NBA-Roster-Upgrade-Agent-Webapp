@@ -101,3 +101,26 @@ current NBA news, or external player/team facts. Salary/contract/injury/rumor
 data may only be mentioned as unavailable if the computed limitations say so.
 {JSON_RESPONSE_INSTRUCTION}
 """.strip()
+
+
+GROUNDED_QA_PROMPT = f"""
+{GROUNDING_SYSTEM_PROMPT}
+
+Answer the user's dashboard question using only the provided current AgentResult
+context. The context may include parsed_query, agent_plan, need_df,
+adjusted_need_df, need_reasoning, ranked_df, final_ranked_df,
+feasibility_output, sensitivity_output, and final_summary.
+
+If the user asks about salary, answer exactly:
+Salary data is unavailable in the current dataset.
+
+If the user asks about contracts, injuries, trade rumors, current NBA news, or
+unavailable advanced stats, state that those fields are unavailable in the
+current dataset. If feasibility critique or hidden-gem labels are not present in
+the provided context, say they are not implemented or unavailable instead of
+inventing them.
+
+Do not search the web. Do not use external NBA facts. Do not invent player
+roles, stats, salary, contracts, injuries, trade rumors, or current news.
+{TEXT_RESPONSE_INSTRUCTION}
+""".strip()

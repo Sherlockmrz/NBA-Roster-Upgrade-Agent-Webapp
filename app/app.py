@@ -15,15 +15,20 @@ if str(REPO_ROOT) not in sys.path:
 from components import (
     merge_parsed_with_sidebar,
     parsed_query_to_session_updates,
+    render_help_box,
+    render_hero,
     render_key_value_grid,
     render_parsed_query,
     render_recommendation_card,
+    render_status_box,
+    render_workflow_strip,
     section_header,
     sidebar_values_from_state,
 )
 from nba_agent.agent import run_roster_agent
 from nba_agent.llm.client import get_llm_status
 from nba_agent.llm.parser import get_parser_warnings, parse_user_query
+from nba_agent.llm.qa import answer_grounded_question
 from nba_agent.visuals.charts import (
     fit_score_bar_chart,
     need_weight_bar_chart,
@@ -42,7 +47,7 @@ EXAMPLE_QUERY = (
 
 
 st.set_page_config(
-    page_title="NBA Roster Upgrade Agent",
+    page_title="NBA Roster Upgrade Agent WebApp",
     page_icon=":basketball:",
     layout="wide",
 )
@@ -101,18 +106,25 @@ def compact_dataframe(df: pd.DataFrame, preferred_columns: list[str], rows: int 
 
 
 def render_tool_a(need_df: pd.DataFrame) -> None:
+    st.write(
+        "Tool A turns recent team performance into need weights. Higher weights "
+        "mean the model sees a larger roster weakness in that area."
+    )
     top_needs = need_df.sort_values("need_weight", ascending=False).head(3)
     columns = st.columns(3)
     for index, (_, row) in enumerate(top_needs.iterrows()):
         with columns[index]:
-            st.metric(
-                row["label"],
-                f"{row['need_weight']:.2f}",
-                help="Higher means this area is a larger deterministic roster need.",
-            )
+            with st.container(border=True):
+                st.metric(
+                    row["label"],
+                    f"{row['need_weight']:.2f}",
+                    help="Higher means this area is a larger deterministic roster need.",
+                )
+                st.caption("Computed need weight")
             if bool(row.get("goal_boosted", False)):
                 st.caption("Goal boosted")
 
+    st.markdown("**Need weight chart**")
     need_weight_bar_chart(need_df)
 
     with st.expander("Full Tool A need table"):
@@ -120,8 +132,17 @@ def render_tool_a(need_df: pd.DataFrame) -> None:
 
 
 def render_tool_b(player_strength_df: pd.DataFrame, filters: dict) -> None:
-    st.metric("Candidate pool", f"{len(player_strength_df):,} players")
-    render_key_value_grid(filters)
+    st.write(
+        "Tool B builds candidate strength profiles from the loaded box-score data "
+        "after applying the parsed filters."
+    )
+    col_a, col_b = st.columns([1, 2])
+    with col_a:
+        with st.container(border=True):
+            st.metric("Candidate pool", f"{len(player_strength_df):,} players")
+            st.caption("Eligible players after filters")
+    with col_b:
+        render_key_value_grid(filters)
 
     st.markdown("**Top player strength rows**")
     st.dataframe(
@@ -148,7 +169,15 @@ def render_tool_b(player_strength_df: pd.DataFrame, filters: dict) -> None:
 
 
 def render_need_reasoning(need_reasoning) -> None:
-    st.info("Need reasoning completed with validated constraints.")
+    st.write(
+        "This step interprets the basketball goal and adjusts only the Tool A "
+        "need weights. The LLM never calculates player stats or fit scores."
+    )
+    render_status_box(
+        "Need reasoning",
+        "Completed with validated constraints.",
+        tone="success",
+    )
     with st.container(border=True):
         st.markdown("**Tactical interpretation**")
         st.write(need_reasoning.tactical_interpretation)
@@ -170,7 +199,9 @@ def render_need_reasoning(need_reasoning) -> None:
             }
         )
 
+    st.markdown("**Validated metric multipliers**")
     st.dataframe(pd.DataFrame(multiplier_rows), use_container_width=True, hide_index=True)
+    st.markdown("**Before / after need weights**")
     need_weight_before_after_chart(need_reasoning.adjusted_need_df)
 
     st.markdown("**Metric explanations**")
@@ -193,13 +224,20 @@ def render_need_reasoning(need_reasoning) -> None:
 
 
 def render_tool_c(ranked_df: pd.DataFrame) -> None:
+    st.write(
+        "Tool C matches adjusted team needs to player strength profiles. Scores "
+        "are deterministic outputs from the current dataset."
+    )
     if ranked_df.empty:
         st.warning("No ranked players matched the current filters.")
         return
 
+    recommendation_columns = st.columns(3)
     for rank, (_, row) in enumerate(ranked_df.head(3).iterrows(), start=1):
-        render_recommendation_card(rank, row)
+        with recommendation_columns[(rank - 1) % 3]:
+            render_recommendation_card(rank, row)
 
+    st.markdown("**Fit score chart**")
     fit_score_bar_chart(ranked_df)
 
     with st.expander("Full Tool C ranked table"):
@@ -207,9 +245,19 @@ def render_tool_c(ranked_df: pd.DataFrame) -> None:
 
 
 def render_sensitivity(sensitivity) -> None:
+    st.write(
+        "The robustness check perturbs adjusted need weights slightly and compares "
+        "whether the same players remain near the top."
+    )
     col_a, col_b = st.columns(2)
-    col_a.metric("Stability", sensitivity.stability_label)
-    col_b.metric("Top-k overlap", f"{sensitivity.top_k_overlap:.0%}")
+    with col_a:
+        with st.container(border=True):
+            st.metric("Stability", sensitivity.stability_label)
+            st.caption("Higher overlap means the ranking is less fragile")
+    with col_b:
+        with st.container(border=True):
+            st.metric("Top-k overlap", f"{sensitivity.top_k_overlap:.0%}")
+            st.caption("Original top players retained after perturbation")
     st.write(sensitivity.explanation)
 
     with st.expander("Rank comparison table"):
@@ -221,12 +269,21 @@ def render_sensitivity(sensitivity) -> None:
 
 
 def render_scouting_summary(summary) -> None:
-    st.markdown("**Executive summary**")
-    st.write(summary.executive_summary)
+    st.write(
+        "The final summary converts the computed outputs into concise scouting "
+        "language while keeping unsupported data unavailable."
+    )
+    with st.container(border=True):
+        st.markdown("**Executive summary**")
+        st.write(summary.executive_summary)
 
     st.markdown("**Key takeaways**")
-    for takeaway in summary.key_takeaways[:3]:
-        st.markdown(f"- {takeaway}")
+    takeaway_columns = st.columns(3)
+    for index, takeaway in enumerate(summary.key_takeaways[:3]):
+        with takeaway_columns[index]:
+            with st.container(border=True):
+                st.markdown(f"**Takeaway {index + 1}**")
+                st.write(takeaway)
 
     st.markdown("**Limitations**")
     st.caption(summary.limitations_note)
@@ -239,6 +296,66 @@ def render_scouting_summary(summary) -> None:
         with st.expander("Summary fallback / debug details"):
             for line in dict.fromkeys(debug_lines):
                 st.caption(line)
+
+
+def render_feasibility_placeholder() -> None:
+    st.write(
+        "This stage is reserved for a grounded feasibility critique. It is shown "
+        "for workflow transparency, but it does not change rankings in this version."
+    )
+    columns = st.columns(3)
+    with columns[0]:
+        render_status_box("Status", "Not implemented yet", tone="warning")
+    with columns[1]:
+        render_status_box("Ranking impact", "No reranking applied", tone="neutral")
+    with columns[2]:
+        render_status_box("Data boundary", "No salary, contract, injury, or rumor data", tone="neutral")
+    st.info(
+        "Feasibility critique is a limitation in the current app. Tool C scores, "
+        "recommendation cards, and robustness checks remain grounded in the "
+        "deterministic dataset outputs."
+    )
+    with st.expander("Feasibility limitation details"):
+        st.caption(
+            "No feasibility labels are assigned because salary, contracts, injuries, "
+            "trade rumors, and current NBA news are unavailable in the current dataset."
+        )
+
+
+def render_grounded_qa(result, use_llm: bool) -> None:
+    st.caption(
+        "Ask about the current run only. Answers are grounded in the displayed "
+        "Tool A/B/C outputs, need reasoning, sensitivity, and summary."
+    )
+    example_questions = [
+        "Why is the first player ranked first?",
+        "What changed after LLM Need Reasoning?",
+        "What changed after Feasibility Critique?",
+        "Is the recommendation stable?",
+        "What data is missing?",
+    ]
+
+    columns = st.columns(len(example_questions))
+    for index, question in enumerate(example_questions):
+        with columns[index]:
+            if st.button(question, key=f"qa_example_{index}", use_container_width=True):
+                _append_qa_exchange(result, question, use_llm)
+
+    for message in st.session_state.get("qa_messages", []):
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    question = st.chat_input("Ask a grounded question about this run")
+    if question:
+        _append_qa_exchange(result, question, use_llm)
+        st.rerun()
+
+
+def _append_qa_exchange(result, question: str, use_llm: bool) -> None:
+    answer = answer_grounded_question(result, question, use_llm=use_llm)
+    st.session_state.setdefault("qa_messages", [])
+    st.session_state["qa_messages"].append({"role": "user", "content": question})
+    st.session_state["qa_messages"].append({"role": "assistant", "content": answer})
 
 
 def initialize_session_state(default_team: str) -> None:
@@ -258,6 +375,7 @@ def initialize_session_state(default_team: str) -> None:
         "last_error": "",
         "last_debug_details": [],
         "last_parse_attempted": False,
+        "qa_messages": [],
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -269,6 +387,7 @@ def run_agent_from_state() -> None:
     st.session_state["last_result"] = None
     st.session_state["last_debug_details"] = []
     st.session_state["last_parse_attempted"] = False
+    st.session_state["qa_messages"] = []
 
     if not query:
         st.session_state["last_error"] = "Enter a roster question before running the agent."
@@ -319,8 +438,16 @@ def run_agent_from_state() -> None:
 
 load_css()
 
-st.title("NBA Roster Upgrade Agent")
-st.caption("Deterministic Streamlit interface for the Tool A / Tool B / Tool C pipeline.")
+render_hero(
+    "NBA Roster Upgrade Agent WebApp",
+    (
+        "An explainable LLM-powered front-office assistant for team diagnosis, "
+        "player fit ranking, feasibility critique, and grounded scouting Q&A."
+    ),
+)
+render_workflow_strip(
+    ["Query", "Parse", "Diagnose", "Reason", "Rank", "Critique", "Verify", "Explain", "Chat"]
+)
 
 missing = missing_raw_files()
 if missing:
@@ -335,6 +462,16 @@ user_query = st.text_area(
     "Ask a roster question",
     height=110,
     key="user_query",
+)
+render_help_box(
+    "How to read this result",
+    [
+        "Start with the parsed query to confirm the team, goal, and filters.",
+        "Use Tool A and Need Reasoning to see why certain skills matter more.",
+        "Read Tool C cards as deterministic fit recommendations, not transaction feasibility.",
+        "Use Sensitivity to judge whether the top recommendations are stable.",
+        "Ask Grounded Q&A only about the displayed run outputs.",
+    ],
 )
 
 with st.sidebar:
@@ -363,6 +500,7 @@ with st.sidebar:
         st.caption(f"Model: {llm_status.model}")
         st.caption(f"Key preview: {llm_status.key_preview or 'not configured'}")
         if not llm_status.available:
+            st.warning("OpenRouter API key is missing.")
             st.caption("Deterministic fallback mode is active.")
     st.button(
         "Run Agent",
@@ -374,7 +512,13 @@ with st.sidebar:
 if "salary" in user_query.lower():
     st.warning("Salary data is unavailable in the current dataset.")
 
-if use_llm:
+if not get_llm_status().available:
+    render_status_box(
+        "Fallback mode",
+        "No API key is configured, so deterministic parsing and summaries remain available.",
+        tone="warning",
+    )
+elif use_llm:
     st.info("LLM parsing and planning will be attempted, with deterministic fallback if unavailable.")
 
 if st.session_state.get("last_error"):
@@ -409,7 +553,7 @@ if debug_warnings:
             st.caption(detail)
 
 with st.container(border=True):
-    section_header("Step 1: User Query", "The composed request passed to the agent.")
+    section_header("Step 1: User Query", "What the user asked the agent to solve.")
     st.write(result.user_query)
 
 with st.container(border=True):
@@ -417,7 +561,7 @@ with st.container(border=True):
     render_parsed_query(result.parsed_query)
 
 with st.container(border=True):
-    section_header("Step 3: Agent Plan", "The ordered execution plan for the deterministic tools.")
+    section_header("Step 3: Agent Plan", "The fixed workflow that keeps Tool A, Tool B, and Tool C in order.")
     for item in result.agent_plan:
         st.markdown(f"- {item}")
 
@@ -459,14 +603,29 @@ with st.container(border=True):
 
 with st.container(border=True):
     section_header(
-        "Step 8: Sensitivity / Robustness Check",
+        "Step 8: LLM Feasibility Critique",
+        "A transparent placeholder for feasibility reasoning that is not active yet.",
+    )
+    render_feasibility_placeholder()
+
+with st.container(border=True):
+    section_header(
+        "Step 9: Sensitivity / Robustness Check",
         "Checks whether top recommendations hold under small need-weight changes.",
     )
     render_sensitivity(result.sensitivity)
 
 with st.container(border=True):
     section_header(
-        "Step 9: Final Scouting Summary",
+        "Step 10: Final Scouting Summary",
         "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
     )
     render_scouting_summary(result.scouting_summary)
+
+with st.container(border=True):
+    section_header(
+        "Step 11: Grounded Q&A",
+        "Ask follow-up questions that stay inside the current AgentResult.",
+    )
+    qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
+    render_grounded_qa(result, use_llm=qa_use_llm)

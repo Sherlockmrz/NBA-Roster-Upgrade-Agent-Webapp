@@ -1,14 +1,222 @@
 /* App-level styles for the roster-upgrade workflow. */
 
+:root {
+    --agent-bg: #f6f7f9;
+    --agent-panel: #ffffff;
+    --agent-text: #18202b;
+    --agent-muted: #5e6978;
+    --agent-line: #dfe4ea;
+    --agent-accent: #1f6f63;
+    --agent-accent-soft: #e6f3ef;
+    --agent-gold: #c28a22;
+    --agent-gold-soft: #fff5de;
+    --agent-blue: #244f86;
+    --agent-blue-soft: #e9f1fb;
+}
+
 .block-container {
-    padding-top: 2rem;
+    padding-top: 1.35rem;
     padding-bottom: 3rem;
+    max-width: 1380px;
+}
+
+.stApp {
+    background: var(--agent-bg);
+    color: var(--agent-text);
+}
+
+.app-hero {
+    padding: 2rem 2.25rem;
+    border: 1px solid var(--agent-line);
+    border-radius: 8px;
+    background:
+        linear-gradient(135deg, rgba(31, 111, 99, 0.08), rgba(36, 79, 134, 0.06)),
+        var(--agent-panel);
+    margin-bottom: 1rem;
+}
+
+.app-hero .app-kicker {
+    color: var(--agent-accent);
+    font-weight: 700;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.4rem;
+}
+
+.app-hero h1 {
+    margin: 0;
+    color: var(--agent-text);
+    font-size: 2.45rem;
+    line-height: 1.1;
+    letter-spacing: 0;
+}
+
+.app-hero p {
+    max-width: 880px;
+    margin: 0.75rem 0 0;
+    color: var(--agent-muted);
+    font-size: 1.04rem;
+    line-height: 1.5;
+}
+
+.workflow-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0.7rem 0 1.25rem;
+}
+
+.workflow-chip {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 2.35rem;
+    padding: 0.35rem 0.55rem;
+    min-width: 6.2rem;
+    border: 1px solid var(--agent-line);
+    border-radius: 8px;
+    background: var(--agent-panel);
+    color: var(--agent-text);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.workflow-arrow {
+    color: var(--agent-muted);
+    font-weight: 800;
+}
+
+.help-box {
+    margin: 0.75rem 0 1.1rem;
+    padding: 1rem 1.1rem;
+    border: 1px solid #cbded8;
+    border-left: 5px solid var(--agent-accent);
+    border-radius: 8px;
+    background: var(--agent-accent-soft);
+}
+
+.help-box strong {
+    color: var(--agent-text);
+}
+
+.help-box ul {
+    margin: 0.5rem 0 0;
+    padding-left: 1.1rem;
+    color: var(--agent-muted);
+}
+
+.help-box li {
+    margin: 0.2rem 0;
+}
+
+.section-heading {
+    border-left: 5px solid var(--agent-blue);
+    padding-left: 0.85rem;
+    margin-bottom: 0.95rem;
+}
+
+.section-heading h2 {
+    margin: 0;
+    color: var(--agent-text);
+    font-size: 1.22rem;
+    line-height: 1.2;
+    letter-spacing: 0;
+}
+
+.section-heading p {
+    margin: 0.25rem 0 0;
+    color: var(--agent-muted);
+    font-size: 0.92rem;
+    line-height: 1.45;
+}
+
+.status-box {
+    min-height: 4.2rem;
+    border: 1px solid var(--agent-line);
+    border-radius: 8px;
+    background: var(--agent-panel);
+    padding: 0.8rem 0.9rem;
+    margin-bottom: 0.55rem;
+}
+
+.status-box strong,
+.status-box span {
+    display: block;
+}
+
+.status-box strong {
+    color: var(--agent-text);
+    font-size: 0.82rem;
+    margin-bottom: 0.25rem;
+}
+
+.status-box span {
+    color: var(--agent-muted);
+    font-size: 0.88rem;
+    line-height: 1.35;
+}
+
+.status-success {
+    border-color: #b9d9cd;
+    background: var(--agent-accent-soft);
+}
+
+.status-warning {
+    border-color: #ead19e;
+    background: var(--agent-gold-soft);
+}
+
+.status-neutral {
+    background: #fafbfc;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border-color: var(--agent-line);
+    border-radius: 8px;
+    background: var(--agent-panel);
 }
 
 [data-testid="stMetricValue"] {
     font-size: 1.35rem;
+    color: var(--agent-text);
+}
+
+[data-testid="stMetricLabel"] {
+    color: var(--agent-muted);
 }
 
 [data-testid="stSidebar"] [data-testid="stButton"] button {
     min-height: 2.75rem;
+}
+
+[data-testid="stSidebar"] {
+    background: #fbfcfd;
+}
+
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--agent-line);
+    border-radius: 8px;
+}
+
+div[data-testid="stChatMessage"] {
+    border: 1px solid var(--agent-line);
+    border-radius: 8px;
+    background: var(--agent-panel);
+}
+
+@media (max-width: 980px) {
+    .workflow-strip {
+        gap: 0.35rem;
+    }
+
+    .workflow-chip {
+        min-width: auto;
+        flex: 1 1 30%;
+    }
+
+    .app-hero h1 {
+        font-size: 2rem;
+    }
 }
