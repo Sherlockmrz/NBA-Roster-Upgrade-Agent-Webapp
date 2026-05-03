@@ -44,9 +44,75 @@ def need_weight_before_after_chart(adjusted_need_df: pd.DataFrame) -> None:
         st.info("No adjusted need weights are available to chart.")
         return
 
-    chart_df = (
-        adjusted_need_df[["label", "need_weight", "adjusted_need_weight"]]
-        .sort_values("adjusted_need_weight", ascending=True)
-        .set_index("label")
+    chart_df = adjusted_need_df.copy()
+    chart_df["label"] = chart_df["label"].fillna(chart_df.get("metric", "Unknown metric"))
+    category_order = chart_df["label"].astype(str).tolist()
+    chart_df["need_weight"] = pd.to_numeric(chart_df["need_weight"], errors="coerce").fillna(0.0)
+    chart_df["adjusted_need_weight"] = (
+        pd.to_numeric(chart_df["adjusted_need_weight"], errors="coerce").fillna(0.0)
     )
-    st.bar_chart(chart_df)
+    chart_df = chart_df[["label", "need_weight", "adjusted_need_weight"]].rename(
+        columns={
+            "need_weight": "Original need weight",
+            "adjusted_need_weight": "Adjusted need weight",
+        }
+    )
+    long_df = chart_df.melt(
+        id_vars="label",
+        var_name="series",
+        value_name="value",
+    )
+    long_df["label"] = pd.Categorical(
+        long_df["label"].astype(str),
+        categories=category_order,
+        ordered=True,
+    )
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce").fillna(0.0)
+    long_df["value_label"] = long_df["value"].map(lambda value: f"{value:.2f}")
+
+    st.vega_lite_chart(
+        long_df,
+        {
+            "height": max(260, 46 * len(category_order)),
+            "layer": [
+                {
+                    "mark": {"type": "bar", "tooltip": True},
+                    "encoding": {
+                        "x": {
+                            "field": "value",
+                            "type": "quantitative",
+                            "title": "Weight",
+                        },
+                        "y": {
+                            "field": "label",
+                            "type": "nominal",
+                            "title": None,
+                            "sort": category_order,
+                        },
+                        "yOffset": {"field": "series"},
+                        "color": {
+                            "field": "series",
+                            "type": "nominal",
+                            "title": None,
+                        },
+                    },
+                },
+                {
+                    "mark": {"type": "text", "align": "left", "baseline": "middle", "dx": 4},
+                    "encoding": {
+                        "x": {"field": "value", "type": "quantitative"},
+                        "y": {
+                            "field": "label",
+                            "type": "nominal",
+                            "sort": category_order,
+                        },
+                        "yOffset": {"field": "series"},
+                        "text": {"field": "value_label"},
+                        "color": {"value": "#18202b"},
+                    },
+                },
+            ],
+            "resolve": {"scale": {"y": "shared"}},
+        },
+        use_container_width=True,
+    )

@@ -298,30 +298,6 @@ def render_scouting_summary(summary) -> None:
                 st.caption(line)
 
 
-def render_feasibility_placeholder() -> None:
-    st.write(
-        "This stage is reserved for a grounded feasibility critique. It is shown "
-        "for workflow transparency, but it does not change rankings in this version."
-    )
-    columns = st.columns(3)
-    with columns[0]:
-        render_status_box("Status", "Not implemented yet", tone="warning")
-    with columns[1]:
-        render_status_box("Ranking impact", "No reranking applied", tone="neutral")
-    with columns[2]:
-        render_status_box("Data boundary", "No salary, contract, injury, or rumor data", tone="neutral")
-    st.info(
-        "Feasibility critique is a limitation in the current app. Tool C scores, "
-        "recommendation cards, and robustness checks remain grounded in the "
-        "deterministic dataset outputs."
-    )
-    with st.expander("Feasibility limitation details"):
-        st.caption(
-            "No feasibility labels are assigned because salary, contracts, injuries, "
-            "trade rumors, and current NBA news are unavailable in the current dataset."
-        )
-
-
 def render_grounded_qa(result, use_llm: bool) -> None:
     st.caption(
         "Ask about the current run only. Answers are grounded in the displayed "
@@ -603,28 +579,21 @@ with st.container(border=True):
 
 with st.container(border=True):
     section_header(
-        "Step 8: LLM Feasibility Critique",
-        "A transparent placeholder for feasibility reasoning that is not active yet.",
-    )
-    render_feasibility_placeholder()
-
-with st.container(border=True):
-    section_header(
-        "Step 9: Sensitivity / Robustness Check",
+        "Step 8: Sensitivity / Robustness Check",
         "Checks whether top recommendations hold under small need-weight changes.",
     )
     render_sensitivity(result.sensitivity)
 
 with st.container(border=True):
     section_header(
-        "Step 10: Final Scouting Summary",
+        "Step 9: Final Scouting Summary",
         "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
     )
     render_scouting_summary(result.scouting_summary)
 
 with st.container(border=True):
     section_header(
-        "Step 11: Grounded Q&A",
+        "Step 10: Grounded Q&A",
         "Ask follow-up questions that stay inside the current AgentResult.",
     )
     qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
