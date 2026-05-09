@@ -242,20 +242,6 @@ div[data-testid="stChatMessage"] {
     border: 1px solid #b9d9cd;
 }
 
-.player-image-placeholder {
-    min-height: 11rem;
-    border: 1px dashed #b8c1cc;
-    border-radius: 8px;
-    background: #f9fafb;
-    color: var(--agent-muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    font-weight: 700;
-    padding: 1rem;
-}
-
 .radar-wrap {
     width: 100%;
     max-width: 230px;

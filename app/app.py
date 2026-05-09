@@ -26,6 +26,15 @@ from components import (
     sidebar_values_from_state,
 )
 from nba_agent.agent import run_roster_agent
+from nba_agent.evaluation.metrics import (
+    build_comparison_table,
+    build_player_comparison_table,
+    build_scored_candidate_table,
+    evaluate_recommendations,
+    tool_pipeline_explainability_checklist,
+    tool_recommendations_from_ranked_df,
+    zero_shot_explainability_checklist,
+)
 from nba_agent.llm.client import (
     clear_llm_call_history,
     get_llm_call_history,
@@ -34,6 +43,7 @@ from nba_agent.llm.client import (
 )
 from nba_agent.llm.parser import get_parser_warnings, parse_user_query
 from nba_agent.llm.qa import answer_grounded_question
+from nba_agent.llm.zero_shot import ZeroShotResult, run_zero_shot_baseline
 from nba_agent.visuals.charts import (
     fit_score_bar_chart,
     need_weight_bar_chart,
@@ -44,7 +54,6 @@ from nba_agent.visuals.radar import RADAR_DIMENSIONS, player_radar_svg
 
 DATA_DIR = Path("data/raw")
 EXPECTED_RAW_FILES = ["teams.csv", "games.csv", "games_details.csv"]
-RANKING_MODES = ["Best Talent", "Realistic Fit", "Hidden Gems"]
 EXAMPLE_QUERY = (
     "Recommend top 5 players for the Golden State Warriors to improve interior "
     "defense using the last 10 games. Only include players with at least 15 "
@@ -244,13 +253,7 @@ def render_top_recommendations_preview(result) -> None:
                 """,
                 unsafe_allow_html=True,
             )
-            image_col, profile_col, radar_col = st.columns([1.05, 2.15, 1.25])
-            with image_col:
-                st.markdown(
-                    '<div class="player-image-placeholder">Player image placeholder</div>',
-                    unsafe_allow_html=True,
-                )
-                st.caption("Salary: unavailable in current dataset")
+            profile_col, radar_col = st.columns([2.25, 1.15])
             with profile_col:
                 st.markdown(f"### {row.get('PLAYER_NAME', 'Unknown player')}")
                 st.caption(f"Current team: {row.get('CURRENT_TEAM', 'Unknown team')}")
@@ -268,6 +271,242 @@ def render_summary_preview(result) -> None:
     )
     with st.container(border=True):
         st.write(result.final_summary or result.scouting_summary.executive_summary)
+
+
+def render_evaluation_tab(result) -> None:
+    top_k = int(result.parsed_query.top_k)
+    zero_key = f"{result.user_query}|{top_k}|{st.session_state.get('selected_use_llm')}"
+
+    section_header(
+        "Evaluation Setup",
+        "This page compares the zero-shot LLM answer and the tool pipeline answer under the same user query and user constraints.",
+    )
+    st.write(result.user_query)
+    llm_status = get_llm_status()
+    setup_cols = st.columns(4)
+    setup_cols[0].metric("Top K", top_k)
+    setup_cols[1].metric("Team", result.parsed_query.team_name)
+    setup_cols[2].metric("Goal", result.parsed_query.goal or "not specified")
+    setup_cols[3].metric("Zero-shot model", llm_status.model)
+    render_key_value_grid(
+        {
+            "min_games": result.parsed_query.min_games,
+            "min_avg_minutes": result.parsed_query.min_avg_minutes,
+            "exclude_current_team": result.parsed_query.exclude_current_team,
+            "zero_shot_llm_available": llm_status.available,
+        }
+    )
+    st.caption(
+        "We use the same query and evaluate both recommendation lists using the same "
+        "dataset-grounded metrics. The zero-shot LLM can produce plausible names, "
+        "but the tool pipeline can verify constraints, compute fit scores, measure "
+        "need alignment, and test robustness."
+    )
+
+    section_header(
+        "Zero-shot LLM Baseline",
+        "The same user query is sent directly to the LLM without Tool A/B/C outputs.",
+    )
+    use_zero_shot_llm = bool(st.session_state.get("selected_use_llm"))
+    if st.button("Run Zero-shot Baseline", use_container_width=True):
+        st.session_state["zero_shot_result"] = run_zero_shot_baseline(
+            user_query=result.user_query,
+            top_k=top_k,
+            use_llm=use_zero_shot_llm,
+        )
+        st.session_state["zero_shot_key"] = zero_key
+
+    zero_result = st.session_state.get("zero_shot_result")
+    if st.session_state.get("zero_shot_key") != zero_key:
+        zero_result = run_zero_shot_baseline(
+            user_query=result.user_query,
+            top_k=top_k,
+            use_llm=False,
+        )
+
+    render_zero_shot_result(zero_result)
+
+    section_header(
+        "Tool Pipeline Recommendations",
+        "The current Tool C top-k output from the existing agent pipeline.",
+    )
+    tool_columns = [
+        column
+        for column in [
+            "PLAYER_NAME",
+            "CURRENT_TEAM",
+            "GP",
+            "AVG_MIN",
+            "fit_score",
+            "best_match",
+        ]
+        if column in result.ranked_df.columns
+    ]
+    tool_ranked = result.ranked_df.head(top_k).copy()
+    if not tool_ranked.empty:
+        tool_ranked.insert(0, "rank", range(1, len(tool_ranked) + 1))
+        st.dataframe(tool_ranked[["rank", *tool_columns]], use_container_width=True, hide_index=True)
+    else:
+        st.info("No tool pipeline recommendations are available for the current filters.")
+
+    section_header(
+        "Fair Metric Evaluation",
+        "Both recommendation lists are evaluated with the same dataset-grounded metrics.",
+    )
+    st.warning(
+        "Important fairness note: Tool C fit score and need-alignment score are internal objective metrics. "
+        "Our pipeline is designed to optimize them, so they are not independent ground-truth measures. "
+        "We use them to show alignment with our explicit scoring objective, while fair audit metrics measure "
+        "constraint satisfaction, dataset grounding, evidence coverage, and robustness."
+    )
+    render_help_box(
+        "How to read this evaluation fairly",
+        [
+            "Zero-shot is evaluated using the same dataset checks after it produces names.",
+            "Tool pipeline is expected to win on Tool C fit score because it optimizes Tool C.",
+            "The stronger claim is not that our recommendations are always objectively better.",
+            "The stronger claim is that our pipeline produces recommendations that are constraint-checked, dataset-grounded, scoreable, explainable, and robustness-tested.",
+            "Zero-shot may produce plausible names, but it lacks built-in verification.",
+        ],
+    )
+    zero_result = zero_result if isinstance(zero_result, ZeroShotResult) else run_zero_shot_baseline(
+        result.user_query, top_k, use_llm=False
+    )
+    comparison_outputs = build_evaluation_outputs(result, zero_result)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric(
+        "Candidate found improvement",
+        comparison_outputs["comparison_table"].iloc[0]["Improvement"],
+    )
+    metric_cols[1].metric(
+        "Constraint improvement",
+        comparison_outputs["comparison_table"].iloc[1]["Improvement"],
+    )
+    metric_cols[2].metric(
+        "Evidence coverage improvement",
+        comparison_outputs["comparison_table"].iloc[-1]["Improvement"],
+    )
+
+    section_header(
+        "Main Comparison Table",
+        "Metric-level comparison between zero-shot output and the tool pipeline.",
+    )
+    st.subheader("Fair Audit Metrics")
+    st.caption(
+        "These metrics compare both outputs under the same user query, constraints, and dataset checks."
+    )
+    fair_metrics = comparison_outputs["comparison_table"][
+        comparison_outputs["comparison_table"]["Metric Type"] == "Fair audit metric"
+    ]
+    st.dataframe(
+        fair_metrics,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Internal Objective Metrics")
+    st.caption(
+        "These metrics answer: how well does each recommendation list align with our explicit tool objective?"
+    )
+    objective_metrics = comparison_outputs["comparison_table"][
+        comparison_outputs["comparison_table"]["Metric Type"] == "Internal objective metric"
+    ]
+    st.dataframe(
+        objective_metrics,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Full combined comparison table"):
+        st.dataframe(
+            comparison_outputs["comparison_table"],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    section_header(
+        "Player-by-player Comparison Table",
+        "Side-by-side recommendation differences and dataset-grounded checks.",
+    )
+    st.dataframe(
+        comparison_outputs["player_table"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    section_header(
+        "Explanation / Takeaway",
+        "A concise interpretation of what the comparison is testing.",
+    )
+    render_status_box(
+        "Evaluation takeaway",
+        (
+            "The zero-shot LLM baseline can produce plausible basketball recommendations, "
+            "However, it does not automatically verify dataset constraints, compute fit "
+            "scores, expose intermediate team-need reasoning, or test robustness. Our "
+            "pipeline should not be interpreted as universally better just because it "
+            "scores higher on Tool C; rather, it is more auditable because each "
+            "recommendation is produced through explicit tools and can be evaluated step by step."
+        ),
+        tone="success",
+    )
+
+
+def render_zero_shot_result(zero_result) -> None:
+    if not isinstance(zero_result, ZeroShotResult):
+        st.info("Click Run Zero-shot Baseline to generate the LLM baseline.")
+        return
+
+    if not zero_result.players:
+        st.info(zero_result.limitations)
+    else:
+        st.dataframe(pd.DataFrame(zero_result.players), use_container_width=True, hide_index=True)
+        st.caption(zero_result.limitations)
+
+    if zero_result.used_fallback or zero_result.error_type or zero_result.error_message:
+        with st.expander("Zero-shot fallback / debug details"):
+            st.caption(f"Model attempted: {zero_result.model}")
+            st.caption(f"Fallback used: {zero_result.used_fallback}")
+            if zero_result.error_type:
+                st.caption(f"Error type: {zero_result.error_type}")
+            if zero_result.error_message:
+                st.caption(f"Error message: {zero_result.error_message}")
+
+
+def build_evaluation_outputs(result, zero_result: ZeroShotResult) -> dict[str, pd.DataFrame]:
+    need_df = (
+        result.need_reasoning.adjusted_need_df
+        if not result.need_reasoning.adjusted_need_df.empty
+        else result.need_df
+    )
+    candidate_table = build_scored_candidate_table(need_df, result.player_strength_df)
+    top_k = int(result.parsed_query.top_k)
+    tool_recommendations = tool_recommendations_from_ranked_df(result.ranked_df, top_k)
+
+    zero_metrics, zero_matches = evaluate_recommendations(
+        zero_result.players,
+        candidate_table,
+        result.parsed_query,
+        need_df,
+        top_k,
+        zero_shot_explainability_checklist(),
+    )
+    tool_metrics, tool_matches = evaluate_recommendations(
+        tool_recommendations,
+        candidate_table,
+        result.parsed_query,
+        need_df,
+        top_k,
+        tool_pipeline_explainability_checklist(result),
+    )
+    return {
+        "comparison_table": build_comparison_table(
+            zero_metrics, tool_metrics, result.sensitivity
+        ),
+        "player_table": build_player_comparison_table(
+            zero_matches, tool_matches, result.parsed_query, top_k
+        ),
+    }
 
 
 def render_tool_a(need_df: pd.DataFrame) -> None:
@@ -669,7 +908,6 @@ with st.sidebar:
         key="selected_min_avg_minutes",
     )
     exclude_current_team = st.checkbox("Exclude current team", key="selected_exclude_current_team")
-    ranking_mode = st.radio("Ranking mode", RANKING_MODES, key="selected_ranking_mode")
     use_sidebar_override = st.checkbox("Use sidebar as manual override", key="selected_use_sidebar_override")
     llm_status = get_llm_status()
     with st.expander("LLM status", expanded=True):
@@ -692,9 +930,6 @@ with st.sidebar:
             st.warning("OpenRouter API key is missing.")
             st.caption("Deterministic fallback mode is active.")
 
-if "salary" in user_query.lower():
-    st.warning("Salary data is unavailable in the current dataset.")
-
 if not get_llm_status().available:
     render_status_box(
         "Fallback mode",
@@ -710,100 +945,111 @@ if st.session_state.get("last_error"):
     st.stop()
 
 result = st.session_state.get("last_result")
+agent_tab, evaluation_tab = st.tabs(
+    ["Agent Workflow", "Evaluation: Tool Pipeline vs Zero-shot"]
+)
 if result is None:
-    st.info("Type or edit a roster question, then click Run Agent. The sidebar follows the parsed query by default.")
+    with agent_tab:
+        st.info("Type or edit a roster question, then click Run Agent. The sidebar follows the parsed query by default.")
+    with evaluation_tab:
+        st.info("Run the agent first to compare the tool pipeline against a zero-shot LLM baseline.")
     st.stop()
 
-render_last_run_llm_status()
+with agent_tab:
+    render_last_run_llm_status()
 
-if st.session_state.get("last_parse_attempted"):
-    st.info("LLM parsing attempted; validated query constraints are shown below.")
+    if st.session_state.get("last_parse_attempted"):
+        st.info("LLM parsing attempted; validated query constraints are shown below.")
 
-debug_details = st.session_state.get("last_debug_details", [])
-quiet_warning_terms = ("LLM", "OpenRouter", "fallback", "parser", "planner")
-visible_warnings = []
-debug_warnings = list(debug_details)
-for warning in result.warnings:
-    if any(term in warning for term in quiet_warning_terms):
-        debug_warnings.append(warning)
-    else:
-        visible_warnings.append(warning)
+    debug_details = st.session_state.get("last_debug_details", [])
+    quiet_warning_terms = ("LLM", "OpenRouter", "fallback", "parser", "planner")
+    visible_warnings = []
+    debug_warnings = list(debug_details)
+    for warning in result.warnings:
+        if any(term in warning for term in quiet_warning_terms):
+            debug_warnings.append(warning)
+        else:
+            visible_warnings.append(warning)
 
-for warning in visible_warnings:
-    st.warning(warning)
+    for warning in visible_warnings:
+        st.warning(warning)
 
-render_llm_debug_expander(debug_warnings)
+    render_llm_debug_expander(debug_warnings)
 
-render_top_recommendations_preview(result)
-render_summary_preview(result)
+    render_top_recommendations_preview(result)
+    render_summary_preview(result)
 
-with st.container(border=True):
-    section_header("Step 1: User Query", "What the user asked the agent to solve.")
-    st.write(result.user_query)
+    with st.container(border=True):
+        section_header("Step 1: User Query", "What the user asked the agent to solve.")
+        st.write(result.user_query)
 
-with st.container(border=True):
-    section_header("Step 2: Parsed Query", "Validated parsing of team, goal, and filters.")
-    render_parsed_query(result.parsed_query)
+    with st.container(border=True):
+        section_header("Step 2: Parsed Query", "Validated parsing of team, goal, and filters.")
+        render_parsed_query(result.parsed_query)
 
-with st.container(border=True):
-    section_header("Step 3: Agent Plan", "The fixed workflow that keeps Tool A, Tool B, and Tool C in order.")
-    for item in result.agent_plan:
-        st.markdown(f"- {item}")
+    with st.container(border=True):
+        section_header("Step 3: Agent Plan", "The fixed workflow that keeps Tool A, Tool B, and Tool C in order.")
+        for item in result.agent_plan:
+            if "ranking mode" in str(item).lower():
+                continue
+            st.markdown(f"- {item}")
 
-with st.container(border=True):
-    section_header(
-        "Step 4: Tool A – Team Need Diagnosis",
-        "Recent team weaknesses converted into need weights.",
-    )
-    render_tool_a(result.need_df)
+    with st.container(border=True):
+        section_header(
+            "Step 4: Tool A – Team Need Diagnosis",
+            "Recent team weaknesses converted into need weights.",
+        )
+        render_tool_a(result.need_df)
 
-with st.container(border=True):
-    section_header(
-        "Step 5: LLM Need Reasoning",
-        "Goal-aware need multipliers are validated before deterministic ranking.",
-    )
-    render_need_reasoning(result.need_reasoning)
+    with st.container(border=True):
+        section_header(
+            "Step 5: LLM Need Reasoning",
+            "Goal-aware need multipliers are validated before deterministic ranking.",
+        )
+        render_need_reasoning(result.need_reasoning)
 
-with st.container(border=True):
-    section_header(
-        "Step 6: Tool B – Player Strength Representation",
-        "Candidate player vectors built from the loaded box-score dataset.",
-    )
-    render_tool_b(
-        result.player_strength_df,
-        {
-            "min_games": result.parsed_query.min_games,
-            "min_avg_minutes": result.parsed_query.min_avg_minutes,
-            "exclude_current_team": result.parsed_query.exclude_current_team,
-            "ranking_mode": result.parsed_query.ranking_mode,
-        },
-    )
+    with st.container(border=True):
+        section_header(
+            "Step 6: Tool B – Player Strength Representation",
+            "Candidate player vectors built from the loaded box-score dataset.",
+        )
+        render_tool_b(
+            result.player_strength_df,
+            {
+                "min_games": result.parsed_query.min_games,
+                "min_avg_minutes": result.parsed_query.min_avg_minutes,
+                "exclude_current_team": result.parsed_query.exclude_current_team,
+            },
+        )
 
-with st.container(border=True):
-    section_header(
-        "Step 7: Tool C – Fit Ranking",
-        "Ranked matches between adjusted need weights and Tool B strengths.",
-    )
-    render_tool_c(result.ranked_df)
+    with st.container(border=True):
+        section_header(
+            "Step 7: Tool C – Fit Ranking",
+            "Ranked matches between adjusted need weights and Tool B strengths.",
+        )
+        render_tool_c(result.ranked_df)
 
-with st.container(border=True):
-    section_header(
-        "Step 8: Sensitivity / Robustness Check",
-        "Checks whether top recommendations hold under small need-weight changes.",
-    )
-    render_sensitivity(result.sensitivity)
+    with st.container(border=True):
+        section_header(
+            "Step 8: Sensitivity / Robustness Check",
+            "Checks whether top recommendations hold under small need-weight changes.",
+        )
+        render_sensitivity(result.sensitivity)
 
-with st.container(border=True):
-    section_header(
-        "Step 9: Final Scouting Summary",
-        "Grounded deterministic summary. Salary, contracts, injuries, and rumors remain unavailable.",
-    )
-    render_scouting_summary(result.scouting_summary)
+    with st.container(border=True):
+        section_header(
+            "Step 9: Final Scouting Summary",
+            "Grounded deterministic summary based on the computed pipeline outputs.",
+        )
+        render_scouting_summary(result.scouting_summary)
 
-with st.container(border=True):
-    section_header(
-        "Step 10: Grounded Q&A",
-        "Ask follow-up questions that stay inside the current AgentResult.",
-    )
-    qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
-    render_grounded_qa(result, use_llm=qa_use_llm)
+    with st.container(border=True):
+        section_header(
+            "Step 10: Grounded Q&A",
+            "Ask follow-up questions that stay inside the current AgentResult.",
+        )
+        qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
+        render_grounded_qa(result, use_llm=qa_use_llm)
+
+with evaluation_tab:
+    render_evaluation_tab(result)

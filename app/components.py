@@ -118,6 +118,7 @@ def render_parsed_query(parsed_query: Any) -> None:
     """Render dataclass-like parsed query fields."""
 
     values = asdict(parsed_query) if hasattr(parsed_query, "__dataclass_fields__") else {}
+    values.pop("ranking_mode", None)
     render_key_value_grid(values)
 
 
