@@ -393,6 +393,4 @@ Unsafe files:
 
 ## Author
 
-**Ruize Ma / Sherlockmrz**
-
-GitHub: [Sherlockmrz](https://github.com/Sherlockmrz)
+**Ruize Ma / Alex Wang / Justin Wang
