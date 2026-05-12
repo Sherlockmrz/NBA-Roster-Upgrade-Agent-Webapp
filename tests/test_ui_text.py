@@ -12,11 +12,12 @@ def test_app_does_not_display_full_api_key_or_key_preview():
     assert "OPENROUTER_API_KEY" not in source
 
 
-def test_workflow_strip_does_not_include_critique():
+def test_static_pre_run_workflow_strip_is_not_rendered():
     source = APP_SOURCE.read_text()
-    workflow_call = source.rsplit("render_workflow_strip(", 1)[1].split(")", 1)[0]
 
-    assert "Critique" not in workflow_call
+    assert "render_workflow_strip(" not in source
+    assert "Full Agent Pipeline" in source
+    assert "LLM Tool Selection Decision" in source
 
 
 def test_hero_subtitle_does_not_include_feasibility_critique():

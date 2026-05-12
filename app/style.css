@@ -242,6 +242,70 @@ div[data-testid="stChatMessage"] {
     border: 1px solid #b9d9cd;
 }
 
+.tool-node-card {
+    min-height: 7.3rem;
+}
+
+.tool-node-muted {
+    opacity: 0.74;
+}
+
+.tool-node-topline {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.45rem;
+}
+
+.tool-node-name {
+    color: var(--agent-text);
+    font-weight: 800;
+    line-height: 1.25;
+}
+
+.tool-node-card p {
+    margin: 0;
+    color: var(--agent-muted);
+    font-size: 0.86rem;
+    line-height: 1.35;
+}
+
+.tool-status-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    padding: 0.18rem 0.48rem;
+    border: 1px solid var(--agent-line);
+    background: #f8fafc;
+    color: var(--agent-muted);
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-align: center;
+    line-height: 1.15;
+}
+
+.status-selected-by-llm,
+.status-selected-by-fallback {
+    color: var(--agent-accent);
+    background: var(--agent-accent-soft);
+    border-color: #b9d9cd;
+}
+
+.status-required-dependency {
+    color: var(--agent-blue);
+    background: var(--agent-blue-soft);
+    border-color: #c5d7ec;
+}
+
+.status-manually-opened {
+    color: var(--agent-gold);
+    background: var(--agent-gold-soft);
+    border-color: #ead19e;
+}
+
 .radar-wrap {
     width: 100%;
     max-width: 230px;

@@ -21,10 +21,31 @@ from components import (
     render_parsed_query,
     render_recommendation_card,
     render_status_box,
-    render_workflow_strip,
     section_header,
     sidebar_values_from_state,
 )
+from nba_agent.agentic.tool_registry import (
+    AGENTIC_TOOL_SELECTION,
+    ALWAYS_VISIBLE_TOOLS,
+    FINAL_SUMMARY,
+    FULL_TOOL_PIPELINE,
+    GROUNDED_QA,
+    NEED_REASONING,
+    PARSED_QUERY,
+    SENSITIVITY,
+    TOOL_A,
+    TOOL_B,
+    TOOL_C,
+    USER_QUERY,
+    ZERO_SHOT_EVALUATION,
+    TOOL_REGISTRY,
+)
+from nba_agent.agentic.tool_selector import (
+    ToolSelectionResult,
+    deterministic_tool_selection,
+    select_tools_for_query,
+)
+from nba_agent.agentic.summary import summary_for_selected_tools
 from nba_agent.agent import run_roster_agent
 from nba_agent.evaluation.metrics import (
     build_comparison_table,
@@ -35,6 +56,7 @@ from nba_agent.evaluation.metrics import (
     tool_recommendations_from_ranked_df,
     zero_shot_explainability_checklist,
 )
+from nba_agent.evaluation.agent_benchmark import run_agent_tool_selection_benchmark
 from nba_agent.llm.client import (
     clear_llm_call_history,
     get_llm_call_history,
@@ -55,9 +77,10 @@ from nba_agent.visuals.radar import RADAR_DIMENSIONS, player_radar_svg
 DATA_DIR = Path("data/raw")
 EXPECTED_RAW_FILES = ["teams.csv", "games.csv", "games_details.csv"]
 EXAMPLE_QUERY = (
-    "Recommend top 5 players for the Golden State Warriors to improve interior "
-    "defense using the last 10 games. Only include players with at least 15 "
-    "games and 15 average minutes."
+    "Recommend the top 5 players for the Golden State Warriors to improve "
+    "interior defense over the last 10 games. Only include players with at "
+    "least 15 games and 15 average minutes. Check whether the ranking is "
+    "robust, and keep a grounded Q&A section for follow-up questions."
 )
 
 
@@ -264,13 +287,143 @@ def render_top_recommendations_preview(result) -> None:
                 st.markdown(player_radar_svg(row), unsafe_allow_html=True)
 
 
-def render_summary_preview(result) -> None:
+def render_summary_preview(result, summary=None) -> None:
     section_header(
         "AI Scouting Summary",
         "A concise preview of the grounded final summary before the full reasoning trace.",
     )
     with st.container(border=True):
-        st.write(result.final_summary or result.scouting_summary.executive_summary)
+        summary_text = summary.executive_summary if summary is not None else result.final_summary
+        st.write(summary_text or result.scouting_summary.executive_summary)
+
+
+def render_full_agent_pipeline(selection: ToolSelectionResult) -> None:
+    section_header(
+        "Full Agent Pipeline",
+        "Select any pipeline card to open its output below without rerunning the agent.",
+    )
+    visible_tools = _visible_tools()
+    manual_tools = _manual_tools()
+    columns = st.columns(3)
+    for index, definition in enumerate(FULL_TOOL_PIPELINE):
+        with columns[index % 3]:
+            status = _tool_card_status(definition.tool_id, selection, visible_tools, manual_tools)
+            css_status = status.lower().replace(" ", "-").replace("/", "-")
+            is_visible = definition.tool_id in visible_tools
+            with st.container(border=True):
+                st.markdown(
+                    f"""
+                    <div class="tool-node-card {'tool-node-visible' if is_visible else 'tool-node-muted'}">
+                        <div class="tool-node-topline">
+                            <span class="tool-node-name">{definition.name}</span>
+                            <span class="tool-status-badge status-{css_status}">{status}</span>
+                        </div>
+                        <p>{definition.description}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                button_label = "Visible" if is_visible else "Open section"
+                if st.button(
+                    button_label,
+                    key=f"tool_card_open_{definition.tool_id}",
+                    use_container_width=True,
+                ):
+                    _open_tool_section(definition.tool_id)
+                    st.rerun()
+
+
+def render_tool_selection_decision(selection: ToolSelectionResult) -> None:
+    section_header(
+        "LLM Tool Selection Decision",
+        "A validated planning layer decides which computed outputs should be shown first.",
+    )
+    source_label = "LLM" if selection.source == "llm" and not selection.used_fallback else "deterministic fallback"
+    render_status_box(
+        "Selection source",
+        f"Tool selection came from {source_label}. {selection.validation_note}",
+        tone="success" if selection.source == "llm" and not selection.used_fallback else "neutral",
+    )
+
+    selected_ids = list(selection.selected_tool_ids)
+    skipped_ids = list(selection.skipped_tool_ids)
+    selected_col, skipped_col = st.columns(2)
+    with selected_col:
+        st.markdown("**Selected tools**")
+        if selected_ids:
+            for tool_id in selected_ids:
+                definition = TOOL_REGISTRY[tool_id]
+                reason = selection.rationales.get(tool_id, "Selected for this query.")
+                if tool_id in selection.required_dependency_ids:
+                    reason = f"Required dependency. {reason}"
+                st.markdown(f"- **{definition.name}**: {reason}")
+        else:
+            st.caption("No optional tools were selected.")
+    with skipped_col:
+        st.markdown("**Skipped tools**")
+        if skipped_ids:
+            for tool_id in skipped_ids:
+                definition = TOOL_REGISTRY[tool_id]
+                reason = selection.skipped_rationales.get(tool_id, "Not required by this query.")
+                st.markdown(f"- **{definition.name}**: {reason}")
+        else:
+            st.caption("No optional tools were skipped.")
+
+    if selection.warnings:
+        with st.expander("Tool selection validation details"):
+            for warning in selection.warnings:
+                st.caption(warning)
+
+
+def render_manual_unavailable_section(tool_id: str) -> None:
+    definition = TOOL_REGISTRY[tool_id]
+    with st.container(border=True):
+        section_header(
+            definition.name,
+            "This pipeline node is available from the current app surface.",
+        )
+        if tool_id == ZERO_SHOT_EVALUATION:
+            st.info("Open the Evaluation tab to run the zero-shot baseline comparison for this result.")
+        else:
+            st.info(
+                "This tool was not run in the current execution. Run a query that selects it "
+                "or enable it manually before execution."
+            )
+
+
+def _visible_tools() -> set[str]:
+    return set(st.session_state.get("visible_tools", set(ALWAYS_VISIBLE_TOOLS)))
+
+
+def _manual_tools() -> set[str]:
+    return set(st.session_state.get("manual_visible_tools", set()))
+
+
+def _open_tool_section(tool_id: str) -> None:
+    visible = _visible_tools()
+    manual = _manual_tools()
+    visible.add(tool_id)
+    if tool_id not in ALWAYS_VISIBLE_TOOLS:
+        manual.add(tool_id)
+    st.session_state["visible_tools"] = visible
+    st.session_state["manual_visible_tools"] = manual
+
+
+def _tool_card_status(
+    tool_id: str,
+    selection: ToolSelectionResult,
+    visible_tools: set[str],
+    manual_tools: set[str],
+) -> str:
+    if tool_id in ALWAYS_VISIBLE_TOOLS:
+        return "Required dependency"
+    if tool_id in manual_tools and tool_id in visible_tools and tool_id not in selection.selected_tool_ids:
+        return "Manually opened"
+    if tool_id in selection.required_dependency_ids:
+        return "Required dependency"
+    if tool_id in selection.selected_tool_ids:
+        return "Selected by LLM" if selection.source == "llm" and not selection.used_fallback else "Selected by fallback"
+    return "Available but not selected"
 
 
 def render_evaluation_tab(result) -> None:
@@ -451,6 +604,8 @@ def render_evaluation_tab(result) -> None:
         tone="success",
     )
 
+    render_agent_tool_selection_benchmark()
+
 
 def render_zero_shot_result(zero_result) -> None:
     if not isinstance(zero_result, ZeroShotResult):
@@ -507,6 +662,37 @@ def build_evaluation_outputs(result, zero_result: ZeroShotResult) -> dict[str, p
             zero_matches, tool_matches, result.parsed_query, top_k
         ),
     }
+
+
+def render_agent_tool_selection_benchmark() -> None:
+    section_header(
+        "Agent Tool-Selection Benchmark",
+        "A lightweight eval for whether the agent planner chooses appropriate tools for different query types.",
+    )
+    st.caption(
+        "This benchmark treats tool selection as an eval target. It compares selected tools "
+        "against expected tools, checks dependencies, and works in deterministic fallback mode "
+        "when LLM access is unavailable."
+    )
+    benchmark_use_llm = bool(st.session_state.get("selected_use_llm"))
+    if st.button("Run Agent Tool-Selection Benchmark", use_container_width=True):
+        st.session_state["agent_tool_selection_benchmark"] = run_agent_tool_selection_benchmark(
+            use_llm=benchmark_use_llm
+        )
+
+    benchmark = st.session_state.get("agent_tool_selection_benchmark")
+    if benchmark is None:
+        st.info("Click the benchmark button to evaluate tool-selection behavior.")
+        return
+
+    metrics = benchmark.aggregate_metrics
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Exact match", f"{metrics['average_exact_match']:.0%}")
+    metric_cols[1].metric("Precision", f"{metrics['average_precision']:.0%}")
+    metric_cols[2].metric("Recall", f"{metrics['average_recall']:.0%}")
+    metric_cols[3].metric("F1", f"{metrics['average_f1']:.0%}")
+    metric_cols[4].metric("Dependency valid", f"{metrics['dependency_validity_rate']:.0%}")
+    st.dataframe(benchmark.to_dataframe(), use_container_width=True, hide_index=True)
 
 
 def render_tool_a(need_df: pd.DataFrame) -> None:
@@ -763,6 +949,9 @@ def initialize_session_state(default_team: str) -> None:
         "last_llm_error_message": "",
         "llm_connection_test": None,
         "qa_messages": [],
+        "last_tool_selection": None,
+        "visible_tools": set(ALWAYS_VISIBLE_TOOLS),
+        "manual_visible_tools": set(),
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -827,7 +1016,15 @@ def run_agent_from_state() -> None:
         st.session_state["last_error"] = str(exc)
         return
 
+    tool_selection = select_tools_for_query(
+        user_query=query,
+        parsed_query=result.parsed_query,
+        use_llm=use_llm,
+    )
     st.session_state["last_result"] = result
+    st.session_state["last_tool_selection"] = tool_selection
+    st.session_state["visible_tools"] = set(ALWAYS_VISIBLE_TOOLS) | set(tool_selection.selected_tool_ids)
+    st.session_state["manual_visible_tools"] = set()
     st.session_state["last_debug_details"] = debug_details
     failed_call = next(
         (call for call in get_llm_call_history() if call.used_fallback or not call.ok),
@@ -847,9 +1044,6 @@ render_hero(
         "An explainable LLM-powered front-office assistant for team diagnosis, "
         "player fit ranking, robustness checking, and grounded scouting Q&A."
     ),
-)
-render_workflow_strip(
-    ["Query", "Parse", "Diagnose", "Reason", "Rank", "Verify", "Explain", "Chat"]
 )
 
 missing = missing_raw_files()
@@ -956,6 +1150,12 @@ if result is None:
     st.stop()
 
 with agent_tab:
+    tool_selection = st.session_state.get("last_tool_selection")
+    if not isinstance(tool_selection, ToolSelectionResult):
+        tool_selection = deterministic_tool_selection(result.user_query, result.parsed_query)
+        st.session_state["last_tool_selection"] = tool_selection
+    visible_tools = _visible_tools()
+
     render_last_run_llm_status()
 
     if st.session_state.get("last_parse_attempted"):
@@ -976,80 +1176,107 @@ with agent_tab:
 
     render_llm_debug_expander(debug_warnings)
 
-    render_top_recommendations_preview(result)
-    render_summary_preview(result)
+    render_full_agent_pipeline(tool_selection)
+    render_tool_selection_decision(tool_selection)
 
-    with st.container(border=True):
-        section_header("Step 1: User Query", "What the user asked the agent to solve.")
-        st.write(result.user_query)
+    visible_tools = _visible_tools()
+    display_summary = summary_for_selected_tools(result, visible_tools)
+    if TOOL_C in visible_tools:
+        render_top_recommendations_preview(result)
+    if FINAL_SUMMARY in visible_tools:
+        render_summary_preview(result, display_summary)
 
-    with st.container(border=True):
-        section_header("Step 2: Parsed Query", "Validated parsing of team, goal, and filters.")
-        render_parsed_query(result.parsed_query)
+    if USER_QUERY in visible_tools:
+        with st.container(border=True):
+            section_header("Step 1: User Query", "What the user asked the agent to solve.")
+            st.write(result.user_query)
 
-    with st.container(border=True):
-        section_header("Step 3: Agent Plan", "The fixed workflow that keeps Tool A, Tool B, and Tool C in order.")
-        for item in result.agent_plan:
-            if "ranking mode" in str(item).lower():
-                continue
-            st.markdown(f"- {item}")
+    if PARSED_QUERY in visible_tools:
+        with st.container(border=True):
+            section_header("Step 2: Parsed Query", "Validated parsing of team, goal, and filters.")
+            render_parsed_query(result.parsed_query)
 
-    with st.container(border=True):
-        section_header(
-            "Step 4: Tool A – Team Need Diagnosis",
-            "Recent team weaknesses converted into need weights.",
-        )
-        render_tool_a(result.need_df)
+    if AGENTIC_TOOL_SELECTION in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 3: Agentic Tool Selection",
+                "The fixed tool order is preserved while the display adapts to the query.",
+            )
+            st.markdown("**Validated display plan**")
+            for item in result.agent_plan:
+                if "ranking mode" in str(item).lower():
+                    continue
+                st.markdown(f"- {item}")
+            st.markdown("**Visible tools for this run**")
+            for tool_id in tool_selection.selected_tool_ids:
+                st.markdown(f"- {TOOL_REGISTRY[tool_id].name}")
 
-    with st.container(border=True):
-        section_header(
-            "Step 5: LLM Need Reasoning",
-            "Goal-aware need multipliers are validated before deterministic ranking.",
-        )
-        render_need_reasoning(result.need_reasoning)
+    if TOOL_A in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 4: Tool A – Team Need Diagnosis",
+                "Recent team weaknesses converted into need weights.",
+            )
+            render_tool_a(result.need_df)
 
-    with st.container(border=True):
-        section_header(
-            "Step 6: Tool B – Player Strength Representation",
-            "Candidate player vectors built from the loaded box-score dataset.",
-        )
-        render_tool_b(
-            result.player_strength_df,
-            {
-                "min_games": result.parsed_query.min_games,
-                "min_avg_minutes": result.parsed_query.min_avg_minutes,
-                "exclude_current_team": result.parsed_query.exclude_current_team,
-            },
-        )
+    if NEED_REASONING in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 5: LLM Need Reasoning",
+                "Goal-aware need multipliers are validated before deterministic ranking.",
+            )
+            render_need_reasoning(result.need_reasoning)
 
-    with st.container(border=True):
-        section_header(
-            "Step 7: Tool C – Fit Ranking",
-            "Ranked matches between adjusted need weights and Tool B strengths.",
-        )
-        render_tool_c(result.ranked_df)
+    if TOOL_B in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 6: Tool B – Player Strength Representation",
+                "Candidate player vectors built from the loaded box-score dataset.",
+            )
+            render_tool_b(
+                result.player_strength_df,
+                {
+                    "min_games": result.parsed_query.min_games,
+                    "min_avg_minutes": result.parsed_query.min_avg_minutes,
+                    "exclude_current_team": result.parsed_query.exclude_current_team,
+                },
+            )
 
-    with st.container(border=True):
-        section_header(
-            "Step 8: Sensitivity / Robustness Check",
-            "Checks whether top recommendations hold under small need-weight changes.",
-        )
-        render_sensitivity(result.sensitivity)
+    if TOOL_C in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 7: Tool C – Fit Ranking",
+                "Ranked matches between adjusted need weights and Tool B strengths.",
+            )
+            render_tool_c(result.ranked_df)
 
-    with st.container(border=True):
-        section_header(
-            "Step 9: Final Scouting Summary",
-            "Grounded deterministic summary based on the computed pipeline outputs.",
-        )
-        render_scouting_summary(result.scouting_summary)
+    if SENSITIVITY in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 8: Sensitivity / Robustness Check",
+                "Checks whether top recommendations hold under small need-weight changes.",
+            )
+            render_sensitivity(result.sensitivity)
 
-    with st.container(border=True):
-        section_header(
-            "Step 10: Grounded Q&A",
-            "Ask follow-up questions that stay inside the current AgentResult.",
-        )
-        qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
-        render_grounded_qa(result, use_llm=qa_use_llm)
+    if FINAL_SUMMARY in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 9: Final Scouting Summary",
+                "Grounded deterministic summary based on the computed pipeline outputs.",
+            )
+            render_scouting_summary(display_summary)
+
+    if GROUNDED_QA in visible_tools:
+        with st.container(border=True):
+            section_header(
+                "Step 10: Grounded Q&A",
+                "Ask follow-up questions that stay inside the current AgentResult.",
+            )
+            qa_use_llm = bool(st.session_state.get("selected_use_llm") and get_llm_status().available)
+            render_grounded_qa(result, use_llm=qa_use_llm)
+
+    if ZERO_SHOT_EVALUATION in visible_tools:
+        render_manual_unavailable_section(ZERO_SHOT_EVALUATION)
 
 with evaluation_tab:
     render_evaluation_tab(result)
