@@ -10,15 +10,6 @@ Screenshots can be updated after running the app locally. Existing repository sc
 
 ![WebApp Home](assets/webapp_home.png)
 
-![Agent Pipeline](assets/agent_trace.png)
-
-![Top Recommendations](assets/player_ranking_cards.png)
-
-![LLM Need Reasoning](assets/llm_need_reasoning.png)
-
-![Evaluation Comparison](assets/evaluation_comparison.png)
-
-![Grounded Q&A](assets/qa_chat.png)
 
 ## Overview
 
@@ -57,24 +48,7 @@ Recommend the top 5 players for the Golden State Warriors to improve interior de
 
 ## Agent Pipeline
 
-```mermaid
-flowchart TD
-    A[User Query] --> B[Query Parser]
-    B --> C[Agentic Tool Selection]
-    C --> D[Python Tool Plan Validator]
-
-    D --> E[Tool A: Team Need Diagnosis]
-    E --> F[LLM Need Reasoning]
-    F --> G[Tool B: Player Strength Representation]
-    G --> H[Tool C: Fit Ranking]
-    H --> I[Sensitivity / Robustness Check]
-    I --> J[Final Scouting Summary]
-    J --> K[Grounded Q&A]
-
-    H --> L[Evaluation Tab]
-    L --> M[Zero-shot LLM Baseline]
-    L --> N[Metric Comparison]
-```
+![Agent Pipeline](assets/agent_trace.png)
 
 ## Agentic Tool Selection
 
